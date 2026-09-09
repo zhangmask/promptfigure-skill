@@ -66,6 +66,8 @@ Agent 直接分析用户给的数据文件（pandas：描述统计、分布、�
 
 ### ③ 提示词生成与绘图
 
+生成提示词按 `prompt-review-workflow.md` 的 golden skeleton 写，并走 8 项审核（或双 Agent 互审）后才调 API。
+
 逐张走 `figure-upgrade-workflow.md` §1 自检清单（图种/实体原样搬运/关系结构/ratio/档位）→ `/api/v1/generate`。批处理全程 standard 草稿，模式按 §2（单图精修 / 整文批处理）。
 
 ### ④ 迭代优化循环（出图不算完）

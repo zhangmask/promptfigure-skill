@@ -1,10 +1,10 @@
 ---
 name: promptfigure-api
 description: 用 promptFigure 生成科研/学术配图（流程图、机制图、管线图、技术路线图、图形摘要），以及优化已有图表、整文批量升级（数据图本地重绘 + 示意图 AI 重构 + 追溯台账）。当用户要「画一张图」「生成论文配图/示意图/机制图/graphical abstract」「把论文里的图变好看/变高级」「批量优化整篇文章的图」、给了 PDF/WPS/Word 文稿要配图或要主动建议插图位、或要配置 promptFigure API key、或要用 REST 接口批量出图时使用。走 https://promptfigure.pages.dev 的 /api/v1/generate，Bearer pf_ key 鉴权，返回 base64 PNG。网页端有多轮问询/二次确认，API 端一次性提交——所以要把用户绘图意图一次说清楚，服务端负责润色成完整示意。
-version: 1.3.3
+version: 1.4.0
 license: MIT
 metadata:
-  version: "1.3.3"
+  version: "1.4.0"
   author: promptFigure (zhangmask)
   homepage: https://promptfigure.pages.dev
   repository: https://github.com/zhangmask/promptfigure-skill
@@ -16,6 +16,19 @@ metadata:
 把一句大白话变成可直接放进论文的科研图。整套管线（LLM 编排 + 提示词工程 + 审查 + 出图）都在服务端，调用方只需把**用户的绘图意图说清楚**。
 
 **线上站点**：https://promptfigure.pages.dev
+
+## 🔴 工作流总览：先对齐，后花钱
+
+**整个流程里唯一花钱的动作是 API 调用**。所有迭代都在本地免费环节完成：
+
+```
+阶段 0 意图确认（对用户）→ 阶段 1 写提示词 → 阶段 2 提示词审核 → 阶段 3 API 出图
+                                ↑__________ 打回/不满意只回到这里改 prompt，免费 __________↓
+```
+
+- **阶段 0-2 强制免费前置**：意图没对齐、prompt 没过审，不准调 API。详见 `references/prompt-review-workflow.md`
+- **双 Agent 模式（推荐给用户）**：Agent A（有用户上下文）写提示词，另开 Agent B 按 8 项清单审核 `handoff.json`，pass 才出图——把返工从"花钱买废图"变成"出图前两秒发现"
+- 出图本身一次到位率 >> 边出边改
 
 ---
 
@@ -36,18 +49,17 @@ metadata:
 
 ---
 
-## 🔴 铁律：零反问
+## 🔴 反问边界：先澄清意图，出图过程零反问
 
-API 出图时**不要向用户追问画图参数**。信息不足就从上下文推断 + 占位符补全，一次性提交。
+**阶段 0（对用户）——意图不明必须主动澄清**：实体是泛称、结构推不出来、用户材料里找不到对应物时，**停下来问**，一次问完（给选项不给开放题）。这是买保险：30 秒的确认换掉 $0.15 的废图。清晰输入则回显确认卡后直接执行，不打断用户。
 
-理由：网页能来回问是因为用户在界面里；调用方 AI 的上下文通常已经有所需信息（正在写的论文、实验记录、前面对话）。反问会打断工作流。
+**阶段 3（对 API）——零反问**：出图过程不向用户追问任何参数。信息不足就从上下文推断 + 占位符补全，一次性提交。
 
-- ❌ 禁止：「你想画什么风格？」「用什么配色？」「比例几比几？」
-- ✅ 正确：推断 → 提交 → 出图 → 若不满意再根据反馈迭代。
+- ❌ 禁止（任何时候）：「你想画什么风格？」「用什么配色？」「比例几比几？」——按一次性收敛表推定
+- ✅ 阶段 0 允许且必须：「三个模块用论文原名还是占位名？」「A→B 是单向还是有反馈？」——**只问意图级问题，一次问完**
+- ✅ 阶段 3 正确：确认卡已过 → 提交 → 出图 → 不满意回阶段 1 改 prompt
 
-**信息不足时**：用语义化占位符（`group A / group B`、`sample N=...`），绝不停下来问。
-
-**边界**：零反问约束的是「对 API 的出图过程」。整文级批量任务（用户甩来一整篇论文）在**开工前允许且应该有一轮集中澄清**（场景/模式/原始材料/档位，4 项一次问完）——见 `references/figure-upgrade-workflow.md` §1。单图任务不需要这轮。
+完整协议（5 项意图清单 / 两档处理 / 确认卡模板）见 `references/prompt-review-workflow.md`。整文级批量任务的开工澄清（场景/模式/原始材料/档位）见 `references/figure-upgrade-workflow.md` §1。
 
 ---
 
@@ -198,6 +210,7 @@ curl -s https://promptfigure.pages.dev/downloads/promptfigure-api.version.json
 |---|---|
 | `references/setup-guide.md` | 还没有 key，需要注册/登录/建 key/充值（含自动化选择器 + curl 路径） |
 | `references/prompt-cookbook.md` | **默认模式**：怎么把用户意图一次性说清楚。**降级模式**（polish:false）怎么写完整英文提示词 |
+| `references/prompt-review-workflow.md` | **每次出图前必读**：四阶段协议（意图确认→写提示词→审核→出图）、5 项意图清单、8 项审核清单、双 Agent 互审与 `handoff.json` 交接契约 |
 | `references/api-contract.md` | 完整契约、网页工作流 4 步、多语言示例、批处理、WAF |
 | `references/troubleshooting.md` | 润色失败、WAF 403、balance 滞后、出图质量差 |
 | `references/document-workflow.md` | 用户给了 `.tex` / `.docx` / `.md` 文稿要配图：怎么定位插图位、从上下文写 prompt、插回文档；LaTeX 编译环境探测与官方下载指引（MiKTeX/TeX Live/TinyTeX/Tectonic/Overleaf） |
