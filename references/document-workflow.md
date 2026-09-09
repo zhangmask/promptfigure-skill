@@ -2,7 +2,7 @@
 
 > 场景：用户给你一篇 `.tex` / `.docx` / `.md` 文稿，要求「把该配图的地方配上图」。本文件教你 **① 定位哪里该出图 ② 从上下文写出正确 prompt ③ 把图插回文档**。
 >
-> 批量升级已有图（结果图溯源重绘/示意图 AI 升级/整文批处理/追溯台账）见 `figure-upgrade-workflow.md`。
+> 批量升级已有图（结果图溯源重绘/示意图 AI 升级/整文批处理/追溯台账）见 `figure-upgrade-workflow.md`；PDF/WPS 解析与主动插图建议见 `proactive-upgrade.md`。
 
 ---
 
