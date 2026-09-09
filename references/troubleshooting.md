@@ -185,3 +185,20 @@ polish:false 实测 ~11s（standard）/ 60–120s（premium 2K 偶尔更长）�
 - 线上文档（权威，比本文件更新）：https://promptfigure.pages.dev/docs/zh-CN/faq
 - 在线调试台（隔离是代码问题还是账号问题）：https://promptfigure.pages.dev/docs/zh-CN/api-playground
 - 服务状态/更新：https://promptfigure.pages.dev/news
+
+---
+
+## premium 被内容审核误伤（502 `content moderation`，2026-09-10 CVPR 实测）
+
+现象：502 + `detail.error = modelflare rejected` + 上游报 "rejected by content moderation"，**自动退款**。
+
+关键实测结论（二分验证）：
+
+- 触发是**整段组合判断，不是单词命中**——把整段 prompt 里的词逐个/分组喂给极简探针全部通过，合在一起就被拒。密集的「检测/候选框/过滤/一致性」类 CV 术语组合（如 …Candidate Boxes + Consensus + Filtering + 本地化器… 同屏多个）容易触发
+- 单个可疑缩写也可能命中（实测 `WBF` 被拒，全称 Weighted Box Fusion 反而通过）——先用极简探针 + 可疑词单独测，拒=免费，通过=正常扣费，别拿整段 prompt 反复烧钱试
+
+处置顺序：
+
+1. 拒了就换措辞重试**最多 2 次**（每次拒绝免费）；去掉标题/缩写、把检测类词汇换成中性词（Estimator/Candidate）常能过
+2. 还不过 → **不要继续试探**：改走 standard 出图（Agnes 通道审核宽松，同样内容能过），拼写/小字问题用 PIL 本地修补（采样盒底色覆盖 + Arial 按原字号重写标签），成本为零且拼写百分百正确
+3. 台账里记 `moderation_blocked: true` 与被拒 prompt，便于服务端侧后续排查
