@@ -1,10 +1,10 @@
 ---
 name: promptfigure-api
 description: 用 promptFigure 生成科研/学术配图（流程图、机制图、管线图、技术路线图、图形摘要），以及优化已有图表、整文批量升级（数据图本地重绘 + 示意图 AI 重构 + 追溯台账）。当用户要「画一张图」「生成论文配图/示意图/机制图/graphical abstract」「把论文里的图变好看/变高级」「批量优化整篇文章的图」、给了 PDF/WPS/Word 文稿要配图或要主动建议插图位、或要配置 promptFigure API key、或要用 REST 接口批量出图时使用。走 https://promptfigure.pages.dev 的 /api/v1/generate，Bearer pf_ key 鉴权，返回 base64 PNG。网页端有多轮问询/二次确认，API 端一次性提交——所以要把用户绘图意图一次说清楚，服务端负责润色成完整示意。
-version: 1.3.0
+version: 1.3.1
 license: MIT
 metadata:
-  version: "1.3.0"
+  version: "1.3.1"
   author: promptFigure (zhangmask)
   homepage: https://promptfigure.pages.dev
   repository: https://github.com/zhangmask/promptfigure-skill
@@ -128,7 +128,7 @@ const result = await poll("/api/gen-result", { token: tok, id: jobId });
 | 码 | 含义 | 处置 |
 |---|---|---|
 | 401 | key 无效/已吊销 | 检查 `Authorization: Bearer pf_...`；重建 key |
-| 402 | 余额不足 | 控制台充值（$1 起整数）后重试 |
+| 402 | 余额不足（不扣费） | 控制台充值（$1 起整数）后重试。**批处理/迭代任务开工前先查余额**（`balance` 字段滞后，以控制台为准），预估张数×单价+重试余量；中断时已完成图不回滚，从断点续跑 |
 | 429 | 超 RPM（免费 5 / Lite 10 / Plus 15 / Pro 40 / Ultra 80，账号级共享） | 串行 + 退避 |
 | 502 | 生成失败 | **已自动退款**；看 `detail` 的 `last_text_failure:`——含 `upstream 429` 是上游限频（稍后重试即愈），其余按 detail 判断；赶时间可临时 `polish:false` |
 | 403 | `error code: 1010` | CF WAF 拦了 `Python-urllib/*` UA，换客户端 |
