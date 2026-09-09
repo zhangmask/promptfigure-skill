@@ -192,6 +192,22 @@ doc.save("paper.docx")
 *图 1：Encoder → Cross-scale Fusion → Decoder 的数据流。*
 ```
 
+### 3.5 LaTeX 编译环境：用户没有时怎么办
+
+先探测（`pdflatex --version` / `xelatex --version` / `latexmk` / `tectonic`）。**探测不到就问用户**「论文平时在哪里编译」（可能在本机别处、其他机器或 Overleaf），别擅自装重型工具链；用户确实想在本机新装时，按平台给官方下载指引：
+
+| 方案 | 平台 | 链接 | 适合 |
+|---|---|---|---|
+| **MiKTeX** | Windows/macOS | https://miktex.org/download | Windows 首选，按需自动装宏包 |
+| **TeX Live** | 全平台 | https://tug.org/texlive/ | 最完整，体积大（数 GB） |
+| **TinyTeX** | 全平台 | https://yihui.org/tinytex/ | 轻量（百 MB 级），命令行安装，适合自动化 Agent：`wget -qO- "https://yihui.org/tinytex/install-bin-unix.sh" | sh`（Windows 用 `install-bin-windows.bat`） |
+| **Tectonic** | 全平台 | https://tectonic-typesetting.github.io | 单二进制 + 自动拉依赖包，编译：`tectonic main.tex`；Windows `winget install TectonicTypesetting.Tectonic` 或 `scoop install tectonic` |
+| **Overleaf** | 在线 | https://www.overleaf.com | 零安装，把工程 zip 传上去编译；无本地权限时的默认答案 |
+
+装好后的标准编译序（含参考文献）：`pdflatex main → bibtex main → pdflatex main ×2`，或一条 `latexmk -pdf main`。CVPR 这类模板用 `xelatex` 时把 `pdflatex` 换成 `xelatex` 即可。
+
+Agent 行为规范：安装动作**必须先征得用户同意**再执行；用户选 Overleaf 就把工程打包成 zip 交付并说明上传步骤。
+
 ---
 
 ## 4. 完整流程清单

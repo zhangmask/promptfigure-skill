@@ -1,10 +1,10 @@
 ---
 name: promptfigure-api
 description: 用 promptFigure 生成科研/学术配图（流程图、机制图、管线图、技术路线图、图形摘要），以及优化已有图表、整文批量升级（数据图本地重绘 + 示意图 AI 重构 + 追溯台账）。当用户要「画一张图」「生成论文配图/示意图/机制图/graphical abstract」「把论文里的图变好看/变高级」「批量优化整篇文章的图」、给了 PDF/WPS/Word 文稿要配图或要主动建议插图位、或要配置 promptFigure API key、或要用 REST 接口批量出图时使用。走 https://promptfigure.pages.dev 的 /api/v1/generate，Bearer pf_ key 鉴权，返回 base64 PNG。网页端有多轮问询/二次确认，API 端一次性提交——所以要把用户绘图意图一次说清楚，服务端负责润色成完整示意。
-version: 1.3.1
+version: 1.3.2
 license: MIT
 metadata:
-  version: "1.3.1"
+  version: "1.3.2"
   author: promptFigure (zhangmask)
   homepage: https://promptfigure.pages.dev
   repository: https://github.com/zhangmask/promptfigure-skill
@@ -200,6 +200,6 @@ curl -s https://promptfigure.pages.dev/downloads/promptfigure-api.version.json
 | `references/prompt-cookbook.md` | **默认模式**：怎么把用户意图一次性说清楚。**降级模式**（polish:false）怎么写完整英文提示词 |
 | `references/api-contract.md` | 完整契约、网页工作流 4 步、多语言示例、批处理、WAF |
 | `references/troubleshooting.md` | 润色失败、WAF 403、balance 滞后、出图质量差 |
-| `references/document-workflow.md` | 用户给了 `.tex` / `.docx` / `.md` 文稿要配图：怎么定位插图位、从上下文写 prompt、插回文档 |
+| `references/document-workflow.md` | 用户给了 `.tex` / `.docx` / `.md` 文稿要配图：怎么定位插图位、从上下文写 prompt、插回文档；LaTeX 编译环境探测与官方下载指引（MiKTeX/TeX Live/TinyTeX/Tectonic/Overleaf） |
 | `references/figure-upgrade-workflow.md` | 用户要**优化已有图表**或**整文批量升级**：结果图数据溯源+本地重绘、示意图 AI 升级、结构组合、单图精修/整文批处理两种模式、figure-ledger.json 追溯台账 |
 | `references/proactive-upgrade.md` | 用户给的是 **PDF/WPS**（非 LaTeX）、说不出哪里插图要你**主动建议**、要从**原始数据**推演配图、或想参考顶会/SCI 论文的图学风格：PDF 解析、MCM 插图位惯例、四步管线（分析→推演→提示词→迭代）、refs/ 风格库与合规红线 |
