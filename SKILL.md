@@ -1,10 +1,10 @@
 ---
 name: promptfigure-api
-description: 用 promptFigure 生成科研/学术配图（流程图、机制图、管线图、技术路线图、图形摘要）。当用户要「画一张图」「生成论文配图/示意图/机制图/ graphical abstract」、或要配置 promptFigure API key、或要用 REST 接口批量出图时使用。走 https://promptfigure.pages.dev 的 /api/v1/generate，Bearer pf_ key 鉴权，返回 base64 PNG。网页端有多轮问询/二次确认，API 端一次性提交——所以要把用户绘图意图一次说清楚，服务端负责润色成完整示意。
-version: 1.1.0
+description: 用 promptFigure 生成科研/学术配图（流程图、机制图、管线图、技术路线图、图形摘要），以及优化已有图表、整文批量升级（数据图本地重绘 + 示意图 AI 重构 + 追溯台账）。当用户要「画一张图」「生成论文配图/示意图/机制图/graphical abstract」「把论文里的图变好看/变高级」「批量优化整篇文章的图」、或要配置 promptFigure API key、或要用 REST 接口批量出图时使用。走 https://promptfigure.pages.dev 的 /api/v1/generate，Bearer pf_ key 鉴权，返回 base64 PNG。网页端有多轮问询/二次确认，API 端一次性提交——所以要把用户绘图意图一次说清楚，服务端负责润色成完整示意。
+version: 1.2.0
 license: MIT
 metadata:
-  version: "1.1.0"
+  version: "1.2.0"
   author: promptFigure (zhangmask)
   homepage: https://promptfigure.pages.dev
   repository: https://github.com/zhangmask/promptfigure-skill
@@ -46,6 +46,8 @@ API 出图时**不要向用户追问画图参数**。信息不足就从上下文
 - ✅ 正确：推断 → 提交 → 出图 → 若不满意再根据反馈迭代。
 
 **信息不足时**：用语义化占位符（`group A / group B`、`sample N=...`），绝不停下来问。
+
+**边界**：零反问约束的是「对 API 的出图过程」。整文级批量任务（用户甩来一整篇论文）在**开工前允许且应该有一轮集中澄清**（场景/模式/原始材料/档位，4 项一次问完）——见 `references/figure-upgrade-workflow.md` §1。单图任务不需要这轮。
 
 ---
 
@@ -199,3 +201,4 @@ curl -s https://promptfigure.pages.dev/downloads/promptfigure-api.version.json
 | `references/api-contract.md` | 完整契约、网页工作流 4 步、多语言示例、批处理、WAF |
 | `references/troubleshooting.md` | 润色失败、WAF 403、balance 滞后、出图质量差 |
 | `references/document-workflow.md` | 用户给了 `.tex` / `.docx` / `.md` 文稿要配图：怎么定位插图位、从上下文写 prompt、插回文档 |
+| `references/figure-upgrade-workflow.md` | 用户要**优化已有图表**或**整文批量升级**：结果图数据溯源+本地重绘、示意图 AI 升级、结构组合、单图精修/整文批处理两种模式、figure-ledger.json 追溯台账 |
