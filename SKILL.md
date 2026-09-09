@@ -1,10 +1,10 @@
 ---
 name: promptfigure-api
-description: 用 promptFigure 生成科研/学术配图（流程图、机制图、管线图、技术路线图、图形摘要），以及优化已有图表、整文批量升级（数据图本地重绘 + 示意图 AI 重构 + 追溯台账）。当用户要「画一张图」「生成论文配图/示意图/机制图/graphical abstract」「把论文里的图变好看/变高级」「批量优化整篇文章的图」、给了 PDF/WPS/Word 文稿要配图或要主动建议插图位、或要配置 promptFigure API key、或要用 REST 接口批量出图时使用。走 https://promptfigure.pages.dev 的 /api/v1/generate，Bearer pf_ key 鉴权，返回 base64 PNG。网页端有多轮问询/二次确认，API 端一次性提交——所以要把用户绘图意图一次说清楚，服务端负责润色成完整示意。
-version: 1.4.0
+description: 用 promptFigure 生成科研/学术配图（流程图、机制图、管线图、技术路线图、图形摘要），以及优化已有图表、整文批量升级（数据图本地重绘 + 示意图 AI 重构 + 追溯台账）。当用户要「画一张图」「生成论文配图/示意图/机制图/graphical abstract」「把论文里的图变好看/变高级」「批量优化整篇文章的图」、给了 PDF/WPS/Word 文稿要配图或要主动建议插图位、或要配置 promptFigure API key、或要用 REST 接口批量出图时使用。走 https://promptfigure.pages.dev 的 /api/v1/generate，Bearer pf_ key 鉴权，返回 base64 PNG。强制学术字体规范（图内无衬线、禁手写/花体）与上下文蒸馏规则（原文段落绝不直接进 prompt，先蒸馏成实体/结构/图种三清单再组装）。网页端有多轮问询/二次确认，API 端一次性提交——所以要把用户绘图意图一次说清楚，服务端负责润色成完整示意。
+version: 1.5.0
 license: MIT
 metadata:
-  version: "1.4.0"
+  version: "1.5.0"
   author: promptFigure (zhangmask)
   homepage: https://promptfigure.pages.dev
   repository: https://github.com/zhangmask/promptfigure-skill
@@ -27,7 +27,7 @@ metadata:
 ```
 
 - **阶段 0-2 强制免费前置**：意图没对齐、prompt 没过审，不准调 API。详见 `references/prompt-review-workflow.md`
-- **双 Agent 模式（推荐给用户）**：Agent A（有用户上下文）写提示词，另开 Agent B 按 8 项清单审核 `handoff.json`，pass 才出图——把返工从"花钱买废图"变成"出图前两秒发现"
+- **双 Agent 模式（推荐给用户）**：Agent A（有用户上下文）写提示词，另开 Agent B 按 9 项清单审核 `handoff.json`，pass 才出图——把返工从"花钱买废图"变成"出图前两秒发现"
 - 出图本身一次到位率 >> 边出边改
 
 ---
@@ -210,7 +210,7 @@ curl -s https://promptfigure.pages.dev/downloads/promptfigure-api.version.json
 |---|---|
 | `references/setup-guide.md` | 还没有 key，需要注册/登录/建 key/充值（含自动化选择器 + curl 路径） |
 | `references/prompt-cookbook.md` | **默认模式**：怎么把用户意图一次性说清楚。**降级模式**（polish:false）怎么写完整英文提示词 |
-| `references/prompt-review-workflow.md` | **每次出图前必读**：四阶段协议（意图确认→写提示词→审核→出图）、5 项意图清单、8 项审核清单、双 Agent 互审与 `handoff.json` 交接契约 |
+| `references/prompt-review-workflow.md` | **每次出图前必读**：四阶段协议（意图确认→写提示词→审核→出图）、5 项意图清单、9 项审核清单（含字体合规）、双 Agent 互审与 `handoff.json` 交接契约 |
 | `references/api-contract.md` | 完整契约、网页工作流 4 步、多语言示例、批处理、WAF |
 | `references/troubleshooting.md` | 润色失败、WAF 403、balance 滞后、出图质量差 |
 | `references/document-workflow.md` | 用户给了 `.tex` / `.docx` / `.md` 文稿要配图：怎么定位插图位、从上下文写 prompt、插回文档；LaTeX 编译环境探测与官方下载指引（MiKTeX/TeX Live/TinyTeX/Tectonic/Overleaf） |

@@ -72,12 +72,25 @@ prompt 按五段骨架写（大白话即可，服务端会润色扩写，但骨�
 - 实体名逐字对齐用户材料——这是阶段 2 审核的第一优先项
 - **数字类内容（精确数值/坐标/统计量）禁止写进 prompt**——真数据图走本地 matplotlib（见 `figure-upgrade-workflow.md` §2）
 - 密集检测类术语组合（Candidate Boxes + Consensus + Filtering 多个同屏）可能触发 premium 上游内容审核（见 `troubleshooting.md`）——尽量用中性词（Estimator/Candidate/Select）
+- **字体规范进 prompt**（见下节）：正向写 "clean sans-serif English labels in Helvetica/Arial style"，禁令写 "NO handwritten, cursive, script, or decorative fonts"——两处都写，图模型对禁令响应弱于正向描述
+
+---
+
+## 字体规范（论文图没有手写体的位置）
+
+学术图字体有惯例，prompt 不写，图模型就会自由发挥出花体/手写体/装饰字——论文里不可接受：
+
+- **图内标签/轴/图例**（AI 图与 matplotlib 重绘通用）：**无衬线**，Helvetica / Arial / DejaVu Sans 风格；衬线体（Times/Computer Modern）属于正文与数学公式，不进图
+- 🔴 **永远禁止**：手写体、花体、cursive/script、Comic 风格、装饰性描边字
+- prompt 措辞模板：`clean sans-serif English labels in Helvetica/Arial style; NO handwritten, cursive, script, or decorative fonts`（正向+禁令各写一次）
+- **全文一致性**：同一篇文档的所有图统一字体族——本地重绘 `matplotlib.rcParams['font.family'] = 'DejaVu Sans'`，AI 图 prompt 统一写 "Helvetica/Arial style"
+- 审核清单第 9 项专门核对
 
 ---
 
 ## 阶段 2：提示词审核（pass 了才准调 API）
 
-### 审核清单（8 项，全过才 pass）
+### 审核清单（9 项，全过才 pass）
 
 1. **实体拼写**：每个实体名与用户材料逐字一致？（拼错=图上永久拼错）
 2. **实体完整**：意图清单里的实体是否都进了 prompt？有没有私加的？
@@ -87,10 +100,11 @@ prompt 按五段骨架写（大白话即可，服务端会润色扩写，但骨�
 6. **档位合理**：草稿 standard / 定稿 premium？文字密集图必须 premium 或已有 PIL 修补预案？
 7. **参数齐全**：ratio、size 是否按收敛表定了？
 8. **可润色性**：长度 150-300 词、大白话、无公式符号？
+9. **字体合规**：有无衬线正向描述 + 手写/花体禁令？与全文其他图同一字体族？
 
 ### 审核执行方式
 
-- **最低要求**：构建 Agent 自审——把 8 项逐项过一遍，把结果展示给用户再调 API
+- **最低要求**：构建 Agent 自审——把 9 项逐项过一遍，把结果展示给用户再调 API
 - **推荐（本 skill 鼓励的方式）：双 Agent 互审**，见下节
 
 ---
@@ -103,7 +117,7 @@ prompt 按五段骨架写（大白话即可，服务端会润色扩写，但骨�
 用户 ──需求──→ Agent A（构建者：有完整用户上下文）
                  │ 产出 handoff.json
                  ↓
-              Agent B（审核者：读 skill + handoff.json + 用户材料，独立按 8 项清单判）
+              Agent B（审核者：读 skill + handoff.json + 用户材料，独立按 9 项清单判）
                  │ pass → 用户授权 → Agent A 调 API
                  │ reject → 打回 Agent A 重写（免费，循环直到 pass）
                  ↓
@@ -121,13 +135,13 @@ prompt 按五段骨架写（大白话即可，服务端会润色扩写，但骨�
 }
 ```
 
-Agent B 审核后回写：`"review": {"verdict": "pass|reject", "reasons": ["实体 'Extrection' 应为 'Extraction'（2_method.tex L128）"], "checked": [1,2,3,4,5,6,7,8]}`。
+Agent B 审核后回写：`"review": {"verdict": "pass|reject", "reasons": ["实体 'Extrection' 应为 'Extraction'（2_method.tex L128）"], "checked": [1,2,3,4,5,6,7,8,9]}`。
 
 **打回循环的成本是零**——这正是这个模式的意义：把原本「出图后看结果才发现不对」的返工，变成「出图前两秒就能发现」。
 
 ### 给用户的使用提示（Agent 应主动说）
 
-> 建议开两个 Agent：这个窗口我负责理解你的需求并写提示词，另开一个窗口让 AI 读 promptfigure skill 的 `prompt-review-workflow.md` 当审核员，把 `handoff.json` 丢给它过 8 项清单，pass 了再回来出图。
+> 建议开两个 Agent：这个窗口我负责理解你的需求并写提示词，另开一个窗口让 AI 读 promptfigure skill 的 `prompt-review-workflow.md` 当审核员，把 `handoff.json` 丢给它过 9 项清单，pass 了再回来出图。
 
 ---
 
