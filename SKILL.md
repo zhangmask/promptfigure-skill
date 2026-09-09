@@ -1,6 +1,14 @@
 ---
 name: promptfigure-api
 description: 用 promptFigure 生成科研/学术配图（流程图、机制图、管线图、技术路线图、图形摘要）。当用户要「画一张图」「生成论文配图/示意图/机制图/ graphical abstract」、或要配置 promptFigure API key、或要用 REST 接口批量出图时使用。走 https://promptfigure.pages.dev 的 /api/v1/generate，Bearer pf_ key 鉴权，返回 base64 PNG。网页端有多轮问询/二次确认，API 端一次性提交——所以要把用户绘图意图一次说清楚，服务端负责润色成完整示意。
+version: 1.1.0
+license: MIT
+metadata:
+  version: "1.1.0"
+  author: promptFigure (zhangmask)
+  homepage: https://promptfigure.pages.dev
+  repository: https://github.com/zhangmask/promptfigure-skill
+  latest-check: https://promptfigure.pages.dev/downloads/promptfigure-api.version.json
 ---
 
 # promptFigure 出图技能
@@ -165,6 +173,21 @@ English 版把 `zh-CN` 换成 `en`。拿到新信息后**回写本技能文件**
 
 本技能的**最新版打包**：https://promptfigure.pages.dev/downloads/promptfigure-api.zip —— 若发现本文件内容与线上文档不一致，可下载新版覆盖。
 
+### 版本自查（skill 与更新）
+
+本技能遵循 [Agent Skills 规范](https://agentskills.io/specification)，版本写在 frontmatter（`version` 顶层 + `metadata.version`，语义化版本）：
+
+- **查当前安装的版本**：读本文件 frontmatter 的 `version` 字段即可。
+- **查线上最新版本**（程序化，不用下载整个 zip）：
+
+```bash
+curl -s https://promptfigure.pages.dev/downloads/promptfigure-api.version.json
+# → {"name":"promptfigure-api","version":"1.1.0","updated":"2026-09-09","download":".../promptfigure-api.zip","changelog":"..."}
+```
+
+- 本地 `version` < 线上 `version` → 下载 zip 覆盖本地目录（保留 `pf_` key 等环境变量，它们不存放在 skill 目录里）。
+- 版本号含义：**主版本**变更 = 接口/流程不兼容改动（需重读 SKILL.md）；**次版本** = 新增能力（如新增参考文档）；**修订号** = 文字勘误。
+
 ---
 
 ## 参考文件
@@ -175,3 +198,4 @@ English 版把 `zh-CN` 换成 `en`。拿到新信息后**回写本技能文件**
 | `references/prompt-cookbook.md` | **默认模式**：怎么把用户意图一次性说清楚。**降级模式**（polish:false）怎么写完整英文提示词 |
 | `references/api-contract.md` | 完整契约、网页工作流 4 步、多语言示例、批处理、WAF |
 | `references/troubleshooting.md` | 润色失败、WAF 403、balance 滞后、出图质量差 |
+| `references/document-workflow.md` | 用户给了 `.tex` / `.docx` / `.md` 文稿要配图：怎么定位插图位、从上下文写 prompt、插回文档 |
