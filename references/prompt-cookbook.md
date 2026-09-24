@@ -64,7 +64,7 @@
 { "prompt": "...", "refUrl": "https://...直链.png" }
 ```
 
-⚠️ **当前参考图端点可用性**：上游 `/images/edits` 自 2026-09-07 起持续 503。`refUrl`/`refDataUrl` 经常被忽略（`refIgnored: true`，**当次照常出图并计费**）。看到这种情况，**暂时改用纯文字精确描述**更好。
+⚠️ **当前参考图端点可用性**：上游 `/images/edits` 自 2026-09-07 起持续 503。`refUrl`/`refDataUrl` 经常被忽略（`refIgnored: true`，**当次照常出图并计费**）。看到这种情况，**暂时改用纯文字精确描述**更好。（2026-09-25 复测：premium 2K + refDataUrl ≈0.54MB 一次通过、未标 `refIgnored`，通道可能已恢复——但每次批量任务开始前仍按上文用 1 张 standard 试水，以 `refIgnored` 信号为准。）
 
 ---
 

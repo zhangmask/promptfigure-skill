@@ -1,10 +1,10 @@
 ---
 name: promptfigure-api
 description: 用 promptFigure 生成科研/学术配图（流程图、机制图、管线图、技术路线图、图形摘要），以及优化已有图表、整文批量升级（数据图本地重绘 + 示意图 AI 重构 + 追溯台账）。当用户要「画一张图」「生成论文配图/示意图/机制图/graphical abstract」「把论文里的图变好看/变高级」「批量优化整篇文章的图」、给了 PDF/WPS/Word 文稿要配图或要主动建议插图位、或要配置 promptFigure API key、或要用 REST 接口批量出图时使用。走 https://promptfigure.top 的 /api/v1/generate，Bearer pf_ key 鉴权，返回 base64 PNG。强制学术字体规范（图内无衬线、禁手写/花体）与上下文蒸馏规则（原文段落绝不直接进 prompt，先蒸馏成实体/结构/图种三清单再组装）。网页端有多轮问询/二次确认，API 端一次性提交——所以要把用户绘图意图一次说清楚，服务端负责润色成完整示意。
-version: 1.5.1
+version: 1.5.2
 license: MIT
 metadata:
-  version: "1.5.1"
+  version: "1.5.2"
   author: promptFigure (zhangmask)
   homepage: https://promptfigure.top
   repository: https://github.com/zhangmask/promptfigure-skill
