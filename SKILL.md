@@ -1,21 +1,21 @@
 ---
 name: promptfigure-api
-description: 用 promptFigure 生成科研/学术配图（流程图、机制图、管线图、技术路线图、图形摘要），以及优化已有图表、整文批量升级（数据图本地重绘 + 示意图 AI 重构 + 追溯台账）。当用户要「画一张图」「生成论文配图/示意图/机制图/graphical abstract」「把论文里的图变好看/变高级」「批量优化整篇文章的图」、给了 PDF/WPS/Word 文稿要配图或要主动建议插图位、或要配置 promptFigure API key、或要用 REST 接口批量出图时使用。走 https://promptfigure.pages.dev 的 /api/v1/generate，Bearer pf_ key 鉴权，返回 base64 PNG。强制学术字体规范（图内无衬线、禁手写/花体）与上下文蒸馏规则（原文段落绝不直接进 prompt，先蒸馏成实体/结构/图种三清单再组装）。网页端有多轮问询/二次确认，API 端一次性提交——所以要把用户绘图意图一次说清楚，服务端负责润色成完整示意。
-version: 1.5.0
+description: 用 promptFigure 生成科研/学术配图（流程图、机制图、管线图、技术路线图、图形摘要），以及优化已有图表、整文批量升级（数据图本地重绘 + 示意图 AI 重构 + 追溯台账）。当用户要「画一张图」「生成论文配图/示意图/机制图/graphical abstract」「把论文里的图变好看/变高级」「批量优化整篇文章的图」、给了 PDF/WPS/Word 文稿要配图或要主动建议插图位、或要配置 promptFigure API key、或要用 REST 接口批量出图时使用。走 https://promptfigure.top 的 /api/v1/generate，Bearer pf_ key 鉴权，返回 base64 PNG。强制学术字体规范（图内无衬线、禁手写/花体）与上下文蒸馏规则（原文段落绝不直接进 prompt，先蒸馏成实体/结构/图种三清单再组装）。网页端有多轮问询/二次确认，API 端一次性提交——所以要把用户绘图意图一次说清楚，服务端负责润色成完整示意。
+version: 1.5.1
 license: MIT
 metadata:
-  version: "1.5.0"
+  version: "1.5.1"
   author: promptFigure (zhangmask)
-  homepage: https://promptfigure.pages.dev
+  homepage: https://promptfigure.top
   repository: https://github.com/zhangmask/promptfigure-skill
-  latest-check: https://promptfigure.pages.dev/downloads/promptfigure-api.version.json
+  latest-check: https://promptfigure.top/downloads/promptfigure-api.version.json
 ---
 
 # promptFigure 出图技能
 
 把一句大白话变成可直接放进论文的科研图。整套管线（LLM 编排 + 提示词工程 + 审查 + 出图）都在服务端，调用方只需把**用户的绘图意图说清楚**。
 
-**线上站点**：https://promptfigure.pages.dev
+**线上站点**：https://promptfigure.top
 
 ## 🔴 工作流总览：先对齐，后花钱
 
@@ -95,7 +95,7 @@ metadata:
 ## 调用
 
 ```bash
-curl -s -X POST https://promptfigure.pages.dev/api/v1/generate \
+curl -s -X POST https://promptfigure.top/api/v1/generate \
   -H "Authorization: Bearer $PROMPTFIGURE_KEY" \
   -H "Content-Type: application/json" \
   -d '{"prompt":"<大白话描述，实体写全>","model":"premium","ratio":"16:9"}'
@@ -135,7 +135,7 @@ const result = await poll("/api/gen-result", { token: tok, id: jobId });
 
 成功：`{ b64_json, size, ratio, model, provider, crafted, charged, balance }`
 - `crafted: true` = 走了润色；`false` = `polish:false` 直出
-- `provider` = `agnes`（standard）/ `modelflare`（premium，gpt-image 系列）
+- `provider` = `agnes`（standard）/ `premium`（premium 档，高级档中转通道）
 
 | 码 | 含义 | 处置 |
 |---|---|---|
@@ -146,7 +146,7 @@ const result = await poll("/api/gen-result", { token: tok, id: jobId });
 | 403 | `error code: 1010` | CF WAF 拦了 `Python-urllib/*` UA，换客户端 |
 | 400 | `prompt_required` / `prompt_too_long` | prompt ≤8000 字符 |
 
-⚠️ **`balance` 字段滞后**：`/api/login`、`/api/me` 返回的 `balance` 不等于真实余额（实测返回 0 但扣费成功后余额 0.09）。判断余额以控制台 https://promptfigure.pages.dev/console#account-balance 为准。
+⚠️ **`balance` 字段滞后**：`/api/login`、`/api/me` 返回的 `balance` 不等于真实余额（实测返回 0 但扣费成功后余额 0.09）。判断余额以控制台 https://promptfigure.top/console#account-balance 为准。
 
 ---
 
@@ -154,9 +154,9 @@ const result = await poll("/api/gen-result", { token: tok, id: jobId });
 
 需要 `PROMPTFIGURE_KEY`。**网页为主路径**（含小白 + 浏览器自动化 AI），curl 仅高级补充。详见 `references/setup-guide.md`。
 
-1. 打开 https://promptfigure.pages.dev → 右上角 **登录/注册**（邮箱 + 密码 ≥8 位，**无邮箱验证**）
-2. 进 https://promptfigure.pages.dev/console#account-balance 充值（$1 起整数）
-3. 进 https://promptfigure.pages.dev/console#account-keys 创建 key → **明文 `pf_` 开头只出现一次**，立刻复制存好
+1. 打开 https://promptfigure.top → 右上角 **登录/注册**（邮箱 + 密码 ≥8 位，**无邮箱验证**）
+2. 进 https://promptfigure.top/console#account-balance 充值（$1 起整数）
+3. 进 https://promptfigure.top/console#account-keys 创建 key → **明文 `pf_` 开头只出现一次**，立刻复制存好
 4. `export PROMPTFIGURE_KEY=pf_xxxx`
 
 ⚠️ 明文丢失无法找回，只能吊销重建。
@@ -168,7 +168,7 @@ const result = await poll("/api/gen-result", { token: tok, id: jobId });
 **上面「管线状态」是 2026-09-09 的核对快照。** 每次使用前若距上次核对 > 7 天，或用户报告了与本技能不符的行为，先探一次默认润色：
 
 ```bash
-curl -s -X POST https://promptfigure.pages.dev/api/v1/generate \
+curl -s -X POST https://promptfigure.top/api/v1/generate \
   -H "Authorization: Bearer $PROMPTFIGURE_KEY" -H "Content-Type: application/json" \
   -d '{"prompt":"two-group bar chart comparing A and B","model":"standard"}' | jq .
 ```
@@ -176,16 +176,16 @@ curl -s -X POST https://promptfigure.pages.dev/api/v1/generate \
 `crafted: true` + 200 = 管线健康，无需任何特殊处理；502 看 `last_text_failure`（见 `references/troubleshooting.md`）。
 
 ```text
-https://promptfigure.pages.dev/docs/zh-CN/api          # API 概览
-https://promptfigure.pages.dev/docs/zh-CN/api-playground  # 在线调试台
-https://promptfigure.pages.dev/docs/zh-CN/faq          # 常见问题
-https://promptfigure.pages.dev/pricing                 # 定价与额度
-https://promptfigure.pages.dev/news                    # 更新日志（看运维动态）
+https://promptfigure.top/docs/zh-CN/api          # API 概览
+https://promptfigure.top/docs/zh-CN/api-playground  # 在线调试台
+https://promptfigure.top/docs/zh-CN/faq          # 常见问题
+https://promptfigure.top/pricing                 # 定价与额度
+https://promptfigure.top/news                    # 更新日志（看运维动态）
 ```
 
 English 版把 `zh-CN` 换成 `en`。拿到新信息后**回写本技能文件**，别只在当次对话里用。
 
-本技能的**最新版打包**：https://promptfigure.pages.dev/downloads/promptfigure-api.zip —— 若发现本文件内容与线上文档不一致，可下载新版覆盖。
+本技能的**最新版打包**：https://promptfigure.top/downloads/promptfigure-api.zip —— 若发现本文件内容与线上文档不一致，可下载新版覆盖。
 
 ### 版本自查（skill 与更新）
 
@@ -195,8 +195,8 @@ English 版把 `zh-CN` 换成 `en`。拿到新信息后**回写本技能文件**
 - **查线上最新版本**（程序化，不用下载整个 zip）：
 
 ```bash
-curl -s https://promptfigure.pages.dev/downloads/promptfigure-api.version.json
-# → {"name":"promptfigure-api","version":"1.1.0","updated":"2026-09-09","download":".../promptfigure-api.zip","changelog":"..."}
+curl -s https://promptfigure.top/downloads/promptfigure-api.version.json
+# → {"name":"promptfigure-api","version":"1.5.1","updated":"2026-09-24","download":".../promptfigure-api.zip","changelog":"..."}
 ```
 
 - 本地 `version` < 线上 `version` → 下载 zip 覆盖本地目录（保留 `pf_` key 等环境变量，它们不存放在 skill 目录里）。

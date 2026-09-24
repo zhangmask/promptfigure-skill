@@ -1,6 +1,6 @@
 # 拿到 promptFigure API key
 
-全程站点：https://promptfigure.pages.dev
+全程站点：https://promptfigure.top
 注册 **不需要邮箱验证码**，邮箱 + 密码（≥8 位）即可。
 
 **主路径：网页**。`/api/login`、`/api/keys` 等内部接口**面向已登录会话**，curl 注册可用但绕过了 UI（且会受 WAF UA 拦截），建议人肉注册、AI 只接管「登录后拿 key」这一步。
@@ -11,10 +11,10 @@
 
 最稳。UI 自带 401/校验/防风控。
 
-1. 打开 https://promptfigure.pages.dev
+1. 打开 https://promptfigure.top
 2. 右上角点 **注册**（或 登录）。填邮箱 + 密码（≥8 位），提交即完成，**无需验证邮件**
-3. 打开 https://promptfigure.pages.dev/console#account-balance 充值（$1 起、必须整数，上限 $10000；每满 $50 赠 $1 进余额——按 `floor(金额/50)` 计算，**零头不累计**：$99 只赠 $1，$100 赠 $2）
-4. 打开 https://promptfigure.pages.dev/console#account-keys → 点创建 → **复制明文 key（`pf_` 开头），立刻存好**
+3. 打开 https://promptfigure.top/console#account-balance 充值（$1 起、必须整数，上限 $10000；每满 $50 赠 $1 进余额——按 `floor(金额/50)` 计算，**零头不累计**：$99 只赠 $1，$100 赠 $2）
+4. 打开 https://promptfigure.top/console#account-keys → 点创建 → **复制明文 key（`pf_` 开头），立刻存好**
 5. 把 key 交给调用方环境变量：
 
 ```bash
@@ -73,7 +73,7 @@ req.add_header("User-Agent", "Mozilla/5.0")  # 绕过 CF WAF 拦截
 ### 1. 注册（可选，有账号则跳到 2）
 
 ```bash
-curl -s -X POST https://promptfigure.pages.dev/api/register \
+curl -s -X POST https://promptfigure.top/api/register \
   -H "Content-Type: application/json" \
   -d '{"email":"you@example.com","password":"至少8位"}'
 ```
@@ -84,7 +84,7 @@ curl -s -X POST https://promptfigure.pages.dev/api/register \
 ### 2. 登录
 
 ```bash
-curl -s -X POST https://promptfigure.pages.dev/api/login \
+curl -s -X POST https://promptfigure.top/api/login \
   -H "Content-Type: application/json" \
   -d '{"email":"you@example.com","password":"你的密码"}'
 ```
@@ -95,7 +95,7 @@ curl -s -X POST https://promptfigure.pages.dev/api/login \
 
 ```bash
 export PF_TOKEN=<上一步的 token>
-curl -s -X POST https://promptfigure.pages.dev/api/keys \
+curl -s -X POST https://promptfigure.top/api/keys \
   -H "Authorization: Bearer $PF_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"name":"my-agent"}'
@@ -112,13 +112,13 @@ export PROMPTFIGURE_KEY=pf_xxxxxxxxxxxxxxxx
 ### 4. 充值（必须步骤）
 
 API 计费**只从余额扣**，与会员额度完全独立。新注册余额为 0，不充值调用会 `402`。
-充值走网页：https://promptfigure.pages.dev/console#account-balance（$1 起，整数）。
+充值走网页：https://promptfigure.top/console#account-balance（$1 起，整数）。
 **付款动作不应由 Agent 代劳**，留给用户人肉操作。
 
 ### 5. 验证
 
 ```bash
-curl -s -X POST https://promptfigure.pages.dev/api/v1/generate \
+curl -s -X POST https://promptfigure.top/api/v1/generate \
   -H "Authorization: Bearer $PROMPTFIGURE_KEY" \
   -H "Content-Type: application/json" \
   -d '{"prompt":"Simple two-group bar chart comparing method A and method B","model":"standard"}' \
@@ -133,9 +133,9 @@ curl -s -X POST https://promptfigure.pages.dev/api/v1/generate \
 
 ```bash
 # 列表（不含明文，只有 hint）
-curl -s https://promptfigure.pages.dev/api/keys -H "Authorization: Bearer $PF_TOKEN"
+curl -s https://promptfigure.top/api/keys -H "Authorization: Bearer $PF_TOKEN"
 # 吊销
-curl -s -X POST https://promptfigure.pages.dev/api/keys/revoke \
+curl -s -X POST https://promptfigure.top/api/keys/revoke \
   -H "Authorization: Bearer $PF_TOKEN" \
   -H "Content-Type: application/json" -d '{"id":"<key id>"}'
 ```

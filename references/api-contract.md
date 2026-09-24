@@ -1,6 +1,6 @@
 # API 契约完整版
 
-**站点**：https://promptfigure.pages.dev
+**站点**：https://promptfigure.top
 
 ---
 
@@ -15,7 +15,7 @@
 
 ## 路径 A：API 直调（v1，同步）
 
-**Endpoint**：`POST https://promptfigure.pages.dev/api/v1/generate`
+**Endpoint**：`POST https://promptfigure.top/api/v1/generate`
 **鉴权**：`Authorization: Bearer pf_...`
 **CORS**：全开（`Access-Control-Allow-Origin: *`），鉴权靠 key 不靠 cookie。
 
@@ -29,12 +29,13 @@
   "size":        "1K" | "2K",              // 仅 premium 生效，默认 2K
   "ratio":       "1:1" | "3:2" | "2:3" | "16:9" | "9:16",  // 默认 1:1，非法值回落 1:1
   "refUrl":      "https://.../ref.png",    // 公网图片直链，PNG ≤8MB
-  "refDataUrl":  "data:image/png;base64,..."   // base64 后 ≤8MB
+  "refDataUrl":  "data:image/png;base64,...",  // base64 后 ≤8MB
+  "mode":        "replica"                 // 一键临摹（2026-09-18）；别名 "replica":true、"mode":"一键临摹"
 }
 ```
 
 规则：
-- `prompt` 空或缺失 → `400 prompt_required`
+- `prompt` 空或缺失 → `400 prompt_required`（**临摹模式例外**：`mode:"replica"` 时 `prompt` 可留空，服务端补一句中性复刻指令）
 - `prompt` >8000 字符 → `400 prompt_too_long`
 - `model` 非 `"premium"` 任何值 → `standard`
 - `size` 非 `"1K"` → 2K；`standard` 恒输出 1K
@@ -52,10 +53,14 @@
   "size":     "2K",
   "ratio":    "16:9",
   "model":    "premium",
-  "provider": "modelflare",   // agnes=standard, modelflare=premium (gpt-image 系列)
+  "provider": "premium",      // agnes=standard, premium=premium 档（高级档中转通道）
   "crafted":  false,          // false=polish:false 直出
   "charged":  0.15,
-  "balance":  12.34
+  "balance":  12.34,
+  // 仅 mode:"replica" 出现：
+  "mode":          "replica",
+  "referenceSpec": { /* 见下「一键临摹」 */ },
+  "specError":     null       // 非 null = 参考图规格提取失败，已退化（不额外计费）
 }
 ```
 
@@ -88,7 +93,7 @@
 
 ```bash
 gen() {
-  curl -s -X POST https://promptfigure.pages.dev/api/v1/generate \
+  curl -s -X POST https://promptfigure.top/api/v1/generate \
     -H "Authorization: Bearer $PROMPTFIGURE_KEY" \
     -H "Content-Type: application/json" \
     -d "$1" | tee /tmp/pf.json | jq -r .b64_json | base64 -d > "${2:-figure.png}"
@@ -102,7 +107,7 @@ gen '{"prompt":"对比 ResTiNet 和 CNN 在 OCT 分类上的表现，左侧数�
 #### Node（fetch 默认 UA 不过 WAF）
 
 ```js
-const B = "https://promptfigure.pages.dev";
+const B = "https://promptfigure.top";
 const b64 = await fetch(B + "/api/v1/generate", {
   method: "POST",
   headers: { Authorization: `Bearer ${process.env.PROMPTFIGURE_KEY}`,
@@ -118,7 +123,7 @@ require("fs").writeFileSync("figure.png", Buffer.from(b64.b64_json, "base64"));
 ```python
 import os, base64, requests
 r = requests.post(
-    "https://promptfigure.pages.dev/api/v1/generate",
+    "https://promptfigure.top/api/v1/generate",
     headers={"Authorization": f"Bearer {os.environ['PROMPTFIGURE_KEY']}"},
     json={"prompt": "对比 ResTiNet 和 CNN 在 OCT 分类上的表现，左侧数据流右侧柱状图",
           "model": "premium", "ratio": "16:9"},   # 正常：不传 polish
@@ -137,7 +142,7 @@ print(d["charged"], d["balance"], d.get("refIgnored"))
 ```python
 import json, base64, urllib.request
 req = urllib.request.Request(
-    "https://promptfigure.pages.dev/api/v1/generate",
+    "https://promptfigure.top/api/v1/generate",
     data=json.dumps({"prompt":"...","model":"premium","ratio":"16:9"}).encode(),
     # 紧急绕过（平时不需要）：dict 里加 "polish": False
     headers={
@@ -162,7 +167,7 @@ open("figure.png", "wb").write(base64.b64decode(d["b64_json"]))
 完整 4 步（路径 B 走默认润色，无 polish 开关）：
 
 ```js
-const B = "https://promptfigure.pages.dev";
+const B = "https://promptfigure.top";
 const post = (p, b, t) => fetch(B+p, {
   method:"POST",
   headers:{"Content-Type":"application/json", Authorization:`Bearer ${t}`},
@@ -195,6 +200,57 @@ for (;;) {
 ```
 
 ⚠️ 路径 B **没有等价 `polish:false` 开关**——上游限频期偏慢或失败时，急用请走路径 A。
+
+---
+
+## 一键临摹 `mode: "replica"`（2026-09-18）
+
+**什么时候用**：用户给了一张现成的科研图（示意图 / 流程图 / 机制图 / 图形摘要 / 体系结构图），要求"照这个画一版 / 重画一张 / 保持结构一致"，或者想把别人论文里那张图重做成自己的一套图。**这是这种需求的首选参数**，比自己揣摩着写 prompt 准得多。
+
+**和普通参考图的区别**（关键，决定该不该用它）：
+
+| | 普通参考图（refUrl/refDataUrl） | 一键临摹（+ mode:"replica"） |
+|---|---|---|
+| 参考图给谁 | 只给生图模型，提示词层不知道它存在 | 先送**视觉模型**读成结构化清单，再由清单驱动提示词与审查 |
+| 保真依据 | 靠模型看图即兴 | 清单逐条比对（漏项/多项/编造都能判） |
+| 适合 | 只借风格、构图、配色 | 要**结构一致**的复刻 |
+
+**请求**（必须带参考图，`prompt` 可留空）：
+
+```bash
+gen '{"mode":"replica","refUrl":"https://.../figure3.png","model":"premium","ratio":"16:9"}' replica.png
+# prompt 也可以写要点，例如 {"mode":"replica","prompt":"改成中文标注","refUrl":"..."}
+```
+
+**响应里的 `referenceSpec` 就是那份清单**，可拿来核对本次出图：
+
+```jsonc
+{
+  "canvas": "16:9 landscape",          // ⚠️ 视觉模型对该字段不稳定，仅供方向参考（真实比例由 ratio 决定）
+  "layout": "three phases stacked vertically, Phase II splits into 3 parallel columns",
+  "sections": [{ "id": "a", "role": "..." }],
+  "palette":  [{ "role": "process steps", "color": "light green" }],
+  "text":     [{ "s": "MAPE 8.3%", "kind": "label", "lang": "en", "readable": true }],
+  "elements": [{ "name": "Data preprocessing box", "kind": "box", "note": "green rounded" }],
+  "relations":["Data -> Raw data box", "Decision diamond -> ... (no/tighten constraints)"],
+  "photos":   ["western blot panel"],
+  "ambiguities": ["exact arrow connectivity not individually drawn"]
+}
+```
+
+- `text` 是**原样抄录**（不翻译、不纠错），出图的图上文字按它逐字渲染——所以它也是"中文/英文标注是否正确"的验收依据。`readable:false` 的条目会用中性占位，不会瞎猜。
+- `photos` 里的区域会以**示意方式**重绘，不会伪造显微照片/电泳条带细节（科研场景伪造图像属于学术不端）。
+
+**约束与错误码**：
+
+| 情况 | 结果 |
+|---|---|
+| 没带参考图 | `400 replica_requires_reference`（不扣费） |
+| 参考图 base64 后 >8MB | `413 replica_reference_too_large`（临摹要把图送视觉模型，上限比普通参考图紧；压缩/裁剪后重试） |
+| 视觉轮失败 | 不报错：退化为"带图直接写提示词"，`specError` 带原因，正常计费 |
+| 润色失败 | `502 orchestration_failed` + **自动退款**（与普通生成同一闭环） |
+
+**不适合临摹的**：照片/显微照片/电泳图**本身**（要的是保真像素，不是重画）；数据图表里要精确到像素的坐标轴排布。
 
 ---
 

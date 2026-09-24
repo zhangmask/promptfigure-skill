@@ -82,7 +82,7 @@
 
 **操作规则**：
 - 不要因为 `balance` 看起来够而**预先估算**余额
-- 看到 `402` 不要立即判定没钱，先看 D1 控制台 https://promptfigure.pages.dev/console#account-balance
+- 看到 `402` 不要立即判定没钱，先看 D1 控制台 https://promptfigure.top/console#account-balance
 - 用户报告「明明有钱却被 402」时，先核对控制台余额（不是接口返回的）
 
 ---
@@ -182,15 +182,15 @@ polish:false 实测 ~11s（standard）/ 60–120s（premium 2K 偶尔更长）�
 
 ## 仍然解决不了
 
-- 线上文档（权威，比本文件更新）：https://promptfigure.pages.dev/docs/zh-CN/faq
-- 在线调试台（隔离是代码问题还是账号问题）：https://promptfigure.pages.dev/docs/zh-CN/api-playground
-- 服务状态/更新：https://promptfigure.pages.dev/news
+- 线上文档（权威，比本文件更新）：https://promptfigure.top/docs/zh-CN/faq
+- 在线调试台（隔离是代码问题还是账号问题）：https://promptfigure.top/docs/zh-CN/api-playground
+- 服务状态/更新：https://promptfigure.top/news
 
 ---
 
 ## premium 被内容审核误伤（502 `content moderation`，2026-09-10 CVPR 实测）
 
-现象：502 + `detail.error = modelflare rejected` + 上游报 "rejected by content moderation"，**自动退款**。
+现象：502 + `detail.error = premium channel rejected` + 上游报 "rejected by content moderation"，**自动退款**。
 
 关键实测结论（二分验证）：
 

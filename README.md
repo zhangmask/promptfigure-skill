@@ -1,6 +1,6 @@
 # promptFigure Agent Skill
 
-让 AI Agent（Claude Code / Claude Desktop / WorkBuddy / Codex / Cursor 等）自动调用 [promptFigure](https://promptfigure.pages.dev) 生成科研配图——机制图、实验流程图、技术路线图、图形摘要等。
+让 AI Agent（Claude Code / Claude Desktop / WorkBuddy / Codex / Cursor 等）自动调用 [promptFigure](https://promptfigure.top) 生成科研配图——机制图、实验流程图、技术路线图、图形摘要等。
 
 安装后，AI 会自动完成注册、API key 创建，并把你的绘图意图（大白话即可）转成 API 调用，返回可直接放进论文的 PNG。
 
@@ -25,15 +25,15 @@ npx skills add zhangmask/promptfigure-skill
 
 ## 准备
 
-- 账号：https://promptfigure.pages.dev 注册（邮箱 + 密码 ≥8 位，无需邮箱验证）
+- 账号：https://promptfigure.top 注册（邮箱 + 密码 ≥8 位，无需邮箱验证）
 - 余额：控制台充值（$1 起整数，每满 $50 赠 $1）——API 按次计费，standard $0.02 / 次、premium $0.15 / 次
 - 生成失败自动原路退款
 
 ## 文档
 
-- API 文档：https://promptfigure.pages.dev/docs/zh-CN/api
-- API 调试台：https://promptfigure.pages.dev/docs/zh-CN/api-playground
-- 常见问题：https://promptfigure.pages.dev/docs/zh-CN/faq
+- API 文档：https://promptfigure.top/docs/zh-CN/api
+- API 调试台：https://promptfigure.top/docs/zh-CN/api-playground
+- 常见问题：https://promptfigure.top/docs/zh-CN/faq
 
 ## License
 

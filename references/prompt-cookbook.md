@@ -49,7 +49,7 @@
 - **对比图**：比什么对象、在什么指标上、用什么图表类型（柱状/折线/箱线）
 - **图形摘要**：核心结论一句话 + 支撑它的 2–3 个要素
 
-组合式多 panel 写法见线上：https://promptfigure.pages.dev/docs/zh-CN/figure-structure
+组合式多 panel 写法见线上：https://promptfigure.top/docs/zh-CN/figure-structure
 （多 panel 图记得把 `ratio` 设成 `16:9`）
 
 ## 参考图怎么用
