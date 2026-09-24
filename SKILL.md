@@ -1,10 +1,10 @@
 ---
 name: promptfigure-api
 description: 用 promptFigure 生成科研/学术配图（流程图、机制图、管线图、技术路线图、图形摘要），以及优化已有图表、整文批量升级（数据图本地重绘 + 示意图 AI 重构 + 追溯台账）。当用户要「画一张图」「生成论文配图/示意图/机制图/graphical abstract」「把论文里的图变好看/变高级」「批量优化整篇文章的图」、给了 PDF/WPS/Word 文稿要配图或要主动建议插图位、或要配置 promptFigure API key、或要用 REST 接口批量出图时使用。走 https://promptfigure.top 的 /api/v1/generate，Bearer pf_ key 鉴权，返回 base64 PNG。强制学术字体规范（图内无衬线、禁手写/花体）与上下文蒸馏规则（原文段落绝不直接进 prompt，先蒸馏成实体/结构/图种三清单再组装）。网页端有多轮问询/二次确认，API 端一次性提交——所以要把用户绘图意图一次说清楚，服务端负责润色成完整示意。
-version: 1.5.2
+version: 1.6.0
 license: MIT
 metadata:
-  version: "1.5.2"
+  version: "1.6.0"
   author: promptFigure (zhangmask)
   homepage: https://promptfigure.top
   repository: https://github.com/zhangmask/promptfigure-skill
@@ -22,13 +22,37 @@ metadata:
 **整个流程里唯一花钱的动作是 API 调用**。所有迭代都在本地免费环节完成：
 
 ```
-阶段 0 意图确认（对用户）→ 阶段 1 写提示词 → 阶段 2 提示词审核 → 阶段 3 API 出图
-                                ↑__________ 打回/不满意只回到这里改 prompt，免费 __________↓
+阶段 0 意图确认（对用户）→ 阶段 1 写提示词 → 阶段 2 提示词审核 → 阶段 3 API 出图 → 阶段 4 成图审核
+                                ↑__________ 打回/不满意只回到这里改 prompt，免费 __________↑
 ```
 
 - **阶段 0-2 强制免费前置**：意图没对齐、prompt 没过审，不准调 API。详见 `references/prompt-review-workflow.md`
+- **阶段 4 强制成图审核（2026-09-25 新增）**：出图 ≠ 交付——你（宿主 AI）必须亲自读图，按 5 维度（结构保真/文字正确/科研风格/信息密度/母题到位）逐条判 PASS/FAIL，FAIL 项转成具体 prompt 修改指令回阶段 1 免费迭代。**谁调 API 谁当第一道质检，不许把没读过的图递给用户**。详见 `references/prompt-review-workflow.md` 阶段 4
 - **双 Agent 模式（推荐给用户）**：Agent A（有用户上下文）写提示词，另开 Agent B 按 9 项清单审核 `handoff.json`，pass 才出图——把返工从"花钱买废图"变成"出图前两秒发现"
 - 出图本身一次到位率 >> 边出边改
+
+---
+
+## 🔴 草稿策略：低文字密度 + 科研风格基线（2026-09-25 实测定规）
+
+standard 档的乱码率随**卡面文字量**上升：实测说明性小字是乱码重灾区
+（"discards background patches" → "disnark"、"6-layer transformer encoder" 整行乱码、
+标题 "Technical Roadmap" → "Cattlreet Tbgleftste"），而实体名短标签几乎不出错。
+草稿要好看且不乱码，构造 prompt 时按两条铁律：
+
+1. **卡面文字只留实体名**：草稿 prompt 里，除实体名标签（+最多 2-3 个 ≤2 词的超短标签）外，
+   一切说明性小字——阶段职能句、百分比、参数、标题长句——**全部不写**，改写成 show 画法句
+   让图模型「画出来」而不是「写出来」：
+   - ❌ `Stage 2 Coarse Filter discards background patches (85%)`
+   - ✅ `Stage 2 Coarse Filter, show a funnel icon filtering grey patches and keeping a few highlighted ones`
+   实体名标签本身必须逐字正确（这些错不起）。说明性小字留到 premium 定稿再加回
+   （gpt-image 文字渲染显著更强），且逐字写。
+2. **风格基线块句句带上**（润色层不会替你补）：
+   `flat vector, pure white background, thin dark-gray outlines, no shadows no gradients no 3D, muted semantic palette (2-4 pastel hues + 1 accent color), clean sans-serif English labels, generous whitespace`
+   每个颜色对应一个角色；禁止单一色相约束（见 `prompt-cookbook.md` 配色节）。
+
+草稿是「构图探索」，不是缩水定稿：**构图、母题、配色在草稿里全定下来**，premium 只换清晰度
+和补回文字。详细构造法与正反例见 `references/prompt-cookbook.md`「草稿 = 低文字密度构造法」。
 
 ---
 
@@ -58,6 +82,7 @@ metadata:
 - ❌ 禁止（任何时候）：「你想画什么风格？」「用什么配色？」「比例几比几？」——按一次性收敛表推定
 - ✅ 阶段 0 允许且必须：「三个模块用论文原名还是占位名？」「A→B 是单向还是有反馈？」——**只问意图级问题，一次问完**
 - ✅ 阶段 3 正确：确认卡已过 → 提交 → 出图 → 不满意回阶段 1 改 prompt
+- ✅ **用户说得特别笼统时（"帮我画张方法图"粒度）**：你先按 5 项意图清单**全部给出推定**（图种怎么定、实体从用户材料抽到哪些、结构怎么推），做成确认卡——用户回数字即执行，不回复就按推定走 standard 草稿。笼统输入**一律草稿先行**：standard 出 2 张构图方向不同的草稿（一张忠实推定、一张重构布局），你按阶段 4 审核筛掉差的，带过关的 + 改进点让用户挑。**禁止拿笼统意图直接出 premium**。
 
 完整协议（5 项意图清单 / 两档处理 / 确认卡模板）见 `references/prompt-review-workflow.md`。整文级批量任务的开工澄清（场景/模式/原始材料/档位）见 `references/figure-upgrade-workflow.md` §1。
 

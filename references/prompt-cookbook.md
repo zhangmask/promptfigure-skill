@@ -41,6 +41,40 @@
 - **数值要真实**：没有的数据留占位符或干脆不写。**编造的数值会被原样印到图上**
 - 一句话到三句话通常够，不必堆砌
 
+## 草稿 = 低文字密度构造法（2026-09-25 实测定规）
+
+standard 草稿的乱码率随**卡面文字量**上升（实测：说明性小字整行乱码
+"discards background patches"→"disnark"、标题 "Technical Roadmap"→"Cattlreet Tbgleftste"；
+实体名短标签几乎不出错）。草稿阶段构造 prompt 按三条：
+
+**① 卡面文字只留实体名。** 除实体名标签（+最多 2-3 个 ≤2 词的超短标签）外，一切说明性小字
+——阶段职能句、百分比、参数、长标题——全部**不写**，改写成 show 画法句让图模型画出来：
+
+```
+❌ "Stage 2 Coarse Filter discards background patches (85%)"
+✅ "Stage 2 Coarse Filter, show a funnel icon filtering grey patches and keeping a few highlighted ones"
+
+❌ "Stage 4 Fine Grader (6-layer transformer encoder) assigns per-patch defect scores"
+✅ "Stage 4 Fine Grader, show a stack of thin transformer layers glowing over one highlighted patch"
+```
+
+**② 风格基线块句句带上**（润色层不会替你补，缺一句图模型就自由发挥一句）：
+
+```text
+flat vector, pure white background, thin dark-gray outlines,
+no shadows no gradients no 3D,
+muted semantic palette (2-4 pastel hues + 1 accent color),
+clean sans-serif English labels, generous whitespace
+```
+
+每个颜色对应一个角色（数据=浅蓝、核心=橙红强调、输出=浅绿…），**禁止单一色相约束**（见下文配色节）。
+
+**③ 说明性文字留到 premium 再加回。** 草稿定下构图/母题/配色后，premium 定稿
+复用同一 prompt（只改 model/size），此时才把职能小字补回——premium 的 gpt-image
+文字渲染显著更强，且补回的文字必须逐字写对。
+
+一句话：**草稿管"长什么样"，premium 管"字写得对不对"。**
+
 ## 常见图种的意图描述要点
 
 - **技术路线图**：几个阶段、从左到右、每阶段的关键动作
@@ -176,6 +210,7 @@ Every color has a meaning — different roles get different hues.
 - [ ] 实体写全（组名/模型名/数值/条件）
 - [ ] 结构说了（panel 数/流向/图例）
 - [ ] 数值真实（没有的用占位符，绝不反问）
+- [ ] 草稿按低文字密度构造（卡面只留实体名，说明性内容转 show 画法句 + 风格基线块）
 - [ ] 多 panel 配了 `ratio: "16:9"`
 - [ ] `model` 选对（正式交付 = premium）
 
