@@ -91,6 +91,10 @@
 
 #### Bash / curl（默认 UA 不会被 WAF 拦）
 
+🔴 **响应必须落文件，禁止把原始响应直接回显进对话**——`b64_json` 是几百 KB 的 base64
+（数十万 token 级），直接打印轻则污染上下文、重则撑爆会话（2026-09-25 实测）。
+照下面的范式：管道进文件，jq 只回显元数据字段。
+
 ```bash
 gen() {
   curl -s -X POST https://promptfigure.top/api/v1/generate \
