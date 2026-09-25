@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>pf probe</title></head>
+<body><pre id="out">boot...</pre>
+<script src="/vendor/pdf.min.js"></script>
+<script>
+const out = [];
+const log = (m) => { out.push(m); document.getElementById("out").textContent = out.join("\n"); };
+window.onerror = (e) => log("window.onerror: " + e.message);
+(async () => {
+  try {
+    log("pdfjsLib: " + typeof window.pdfjsLib);
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc = "/vendor/pdf.worker.min.js";
+    const buf = await fetch("/api/file?doc=1b0d6cddb9a8").then((r) => r.arrayBuffer());
+    log("pdf bytes: " + buf.byteLength);
+    const pdf = await window.pdfjsLib.getDocument({ data: buf }).promise;
+    log("pages: " + pdf.numPages);
+    const page = await pdf.getPage(1);
+    const vp = page.getViewport({ scale: 1.5 });
+    log("viewport: " + vp.width + "x" + vp.height);
+    const c = document.createElement("canvas");
+    c.width = vp.width; c.height = vp.height;
+    const t0 = Date.now();
+    await page.render({ canvasContext: c.getContext("2d"), viewport: vp }).promise;
+    log("render done in " + (Date.now() - t0) + "ms");
+    const d = c.getContext("2d").getImageData(0, 0, c.width, c.height).data;
+    let dark = 0;
+    for (let i = 0; i < d.length; i += 4) if (d[i] < 200) dark++;
+    log("darkPixels: " + dark + " / " + (d.length / 4));
+    const tc = await page.getTextContent();
+    log("textContent items: " + tc.items.length + " | first: " + JSON.stringify((tc.items[0] || {}).str || "").slice(0, 60));
+    log("renderTextLayer: " + typeof window.pdfjsLib.renderTextLayer);
+  } catch (e) {
+    log("ERR: " + (e && (e.stack || e.message) || JSON.stringify(e)));
+  }
+})();
+</script></body></html>

@@ -1,0 +1,14 @@
+{
+  "plugins": [
+    {
+      "name": "promptfigure",
+      "source": {
+        "source": "local",
+        "path": "./promptfigure"
+      },
+      "policy": {
+        "installation": "trusted"
+      }
+    }
+  ]
+}

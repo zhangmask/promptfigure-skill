@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>promptFigure · 论文配图工作台</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header id="topbar">
+  <div class="brand">prompt<span>Figure</span> <em>本地工作台</em></div>
+  <div id="doc-title">加载中…</div>
+  <div class="spacer"></div>
+  <button id="btn-queue">审批队列 <span id="cnt-queue" class="cnt"></span></button>
+  <div id="conn" class="dot" title="实时连接"></div>
+</header>
+
+<main>
+  <section id="doc-pane">
+    <div id="doc-view" class="loading">正在渲染文档…</div>
+  </section>
+
+  <aside id="side">
+    <nav id="tabs">
+      <button data-tab="review" class="on">审批 <span id="cnt-review" class="cnt"></span></button>
+      <button data-tab="figures">图库 <span id="cnt-figures" class="cnt"></span></button>
+      <button data-tab="timeline">时间线</button>
+    </nav>
+    <div id="tab-review" class="tab on"><p class="empty">暂无待审批的图</p></div>
+    <div id="tab-figures" class="tab"><p class="empty">还没有图</p></div>
+    <div id="tab-timeline" class="tab"><p class="empty">暂无事件</p></div>
+  </aside>
+</main>
+
+<!-- 图版本对比 / 全屏 / 就地审批 -->
+<div id="overlay" class="hidden">
+  <div id="overlay-head">
+    <span id="overlay-title"></span>
+    <span class="spacer"></span>
+    <button id="btn-locate">定位上下文</button>
+    <button id="btn-fs">全屏</button>
+    <button id="btn-close">关闭 ✕</button>
+  </div>
+  <div id="overlay-main">
+    <div id="overlay-body"></div>
+    <aside id="overlay-review"></aside>
+  </div>
+</div>
+
+<!-- 审批队列：逐张看大图直接批，不用回原文 -->
+<div id="queue" class="hidden">
+  <div id="queue-head">
+    <b>审批队列</b>
+    <span id="queue-pos"></span>
+    <span class="spacer"></span>
+    <button id="queue-prev">← 上一张</button>
+    <button id="queue-next">下一张 →</button>
+    <button id="queue-close">关闭 ✕</button>
+  </div>
+  <div id="queue-main">
+    <div id="queue-img"><img id="queue-img-el" alt=""></div>
+    <aside id="queue-side"></aside>
+  </div>
+</div>
+
+<div id="toast" class="hidden"></div>
+
+<script src="/vendor/jszip.min.js"></script>
+<script src="/vendor/docx-preview.min.js"></script>
+<script src="/vendor/pdf.min.js"></script>
+<script type="module" src="/app.js"></script>
+</body>
+</html>

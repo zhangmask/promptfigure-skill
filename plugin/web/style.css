@@ -1,0 +1,208 @@
+/* promptFigure 本地工作台 —— 零构建、浅色、只读（唯一可操作是审批） */
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --line: #e4e7ec;
+  --ink: #1a2233; --ink2: #667085;
+  --accent: #4361ee;
+  --yellow: #fff3c2; --yellow-line: #e6b800;
+  --green: #d3f2dd; --green-line: #2e9e5b;
+  --red: #fde2e2; --red-line: #d64545;
+  --orange: #ffe8d1; --orange-line: #e07b1f;
+  --gray: #ececec; --gray-line: #b3b3b3;
+}
+* { box-sizing: border-box; margin: 0; }
+html, body { height: 100%; }
+body {
+  font: 14px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  background: var(--bg); color: var(--ink);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+
+#topbar {
+  display: flex; align-items: center; gap: 14px;
+  padding: 8px 16px; background: var(--panel); border-bottom: 1px solid var(--line);
+  flex: 0 0 auto;
+}
+.brand { font-weight: 700; }
+.brand span { color: var(--accent); }
+.brand em { font-style: normal; font-weight: 400; color: var(--ink2); font-size: 12px; margin-left: 6px; }
+#doc-title { color: var(--ink2); font-size: 13px; }
+.spacer { flex: 1; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: #d33; }
+.dot.on { background: #2e9e5b; }
+
+main { flex: 1; display: flex; min-height: 0; }
+
+/* ---- 文档区 ---- */
+#doc-pane { flex: 1; overflow: auto; padding: 20px; min-width: 0; }
+#doc-view {
+  background: var(--panel); max-width: 860px; margin: 0 auto;
+  padding: 48px 56px; box-shadow: 0 1px 4px rgba(0,0,0,.06);
+  border-radius: 6px; min-height: 100%;
+}
+#doc-view.loading { color: var(--ink2); text-align: center; padding-top: 120px; }
+/* docx-preview 产出 */
+.docx-wrapper { background: transparent !important; padding: 0 !important; }
+.docx-wrapper > section.docx {
+  box-shadow: none !important; margin: 0 auto 16px !important;
+  border: 1px solid var(--line) !important;
+}
+/* tex 渲染 */
+.tex-h1 { font-size: 22px; font-weight: 700; margin: 28px 0 12px; }
+.tex-h2 { font-size: 18px; font-weight: 700; margin: 22px 0 10px; }
+.tex-h3 { font-size: 16px; font-weight: 600; margin: 18px 0 8px; }
+.tex-p { margin: 0 0 10px; text-align: justify; }
+
+/* PDF 页（tex 编译产物 / 直接打开的 pdf）：canvas + 文本层 */
+.pdf-page { position: relative; margin: 0 auto 16px; border: 1px solid #e4e7ec; border-radius: 4px; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.05); }
+.pdf-page canvas { display: block; }
+.textLayer { position: absolute; inset: 0; overflow: hidden; opacity: 1; line-height: 1; text-align: initial; text-size-adjust: none; forced-color-adjust: none; }
+.textLayer span { color: transparent; position: absolute; white-space: pre; cursor: text; transform-origin: 0 0; }
+.textLayer ::selection { background: rgba(0, 100, 255, .18); }
+.tex-tip { background: #fff8e6; border: 1px solid #f0d896; border-radius: 6px; padding: 10px 14px; margin-bottom: 16px; font-size: 13px; line-height: 1.6; color: #6b5410; }
+.tex-cap { color: var(--ink2); font-style: italic; border-left: 3px solid var(--line); padding-left: 10px; }
+
+/* ---- 高亮 ----
+   荧光笔色号（c0-c4 循环）= 哪张图的上下文；
+   顶部细条 = 审批状态；底部色带 = 重叠进来的其他图（每图一条，越叠越多）；
+   重叠区间背景加深纹理（JS 设 inline background/box-shadow） */
+.pf-hl {
+  cursor: pointer; border-radius: 2px; padding: 0 1px;
+  transition: filter .15s;
+}
+.pf-hl:hover { filter: brightness(.96); }
+.pf-hl.depth2 { background-image: repeating-linear-gradient(45deg, rgba(0,0,0,.05) 0 4px, transparent 4px 9px); }
+.pf-hl.depth3, .pf-hl.depth4 { background-image: repeating-linear-gradient(45deg, rgba(0,0,0,.09) 0 3px, transparent 3px 7px); }
+.pf-hl.flash, .pf-ctx.flash { animation: pf-flash 0.6s ease-in-out 2; }
+@keyframes pf-flash { 0%,100% { filter: none; } 50% { filter: brightness(.82); } }
+
+/* 段落级上下文（文本模式）：整段淡荧光 + 左侧色带；多图重叠时 title 列出 */
+.pf-ctx {
+  cursor: pointer;
+  background: linear-gradient(90deg, var(--pf-ctx-bg, #fff3c2), transparent 92%);
+  box-shadow: inset 3px 0 0 var(--pf-ctx-line, #e6b800);
+  border-radius: 2px;
+}
+
+/* ---- 内联图卡片：插在锚点所在块之后 = "图定位到原文的位置" ---- */
+.pf-inline-fig {
+  margin: 14px 0; max-width: 460px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--panel, #fff); overflow: hidden; cursor: zoom-in;
+  box-shadow: 0 1px 6px rgba(0,0,0,.06);
+}
+.pf-inline-fig:hover { box-shadow: 0 2px 12px rgba(0,0,0,.12); }
+.pf-inline-fig img { display: block; width: 100%; max-height: 340px; object-fit: contain; background: #fafafa; }
+.pf-inline-fig .cap { font-size: 12px; color: var(--ink2); padding: 6px 10px; border-top: 1px solid var(--line); }
+
+/* ---- 浮层右栏：锚定原文（这张图取材的文段） ---- */
+.fig-ctx { border: 1px solid var(--line); border-radius: 8px; margin-bottom: 12px; overflow: hidden; }
+.fig-ctx-title { font-size: 12px; font-weight: 600; padding: 7px 10px; background: var(--accent-weak, #eef4ff); color: var(--accent, #3b74d1); }
+.fig-ctx-item { padding: 8px 10px; border-top: 1px solid var(--line); }
+.fig-ctx-item .meta { font-size: 11px; color: var(--ink2); margin-bottom: 4px; }
+.fig-ctx-item .quote { font-size: 13px; line-height: 1.55; color: var(--ink, #222); margin-bottom: 6px; }
+
+/* ---- 右栏 ---- */
+#side {
+  flex: 0 0 360px; border-left: 1px solid var(--line); background: var(--panel);
+  display: flex; flex-direction: column; min-height: 0;
+}
+#tabs { display: flex; border-bottom: 1px solid var(--line); }
+#tabs button {
+  flex: 1; padding: 10px 0; border: 0; background: none; cursor: pointer;
+  font-size: 13px; color: var(--ink2); border-bottom: 2px solid transparent;
+}
+#tabs button.on { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+.cnt { background: var(--accent); color: #fff; border-radius: 8px; font-size: 11px; padding: 0 6px; }
+.tab { display: none; overflow: auto; padding: 12px; flex: 1; }
+.tab.on { display: block; }
+.empty { color: var(--ink2); text-align: center; padding: 32px 0; }
+
+.card {
+  border: 1px solid var(--line); border-radius: 8px; margin-bottom: 12px; overflow: hidden;
+}
+.card img.thumb { width: 100%; display: block; cursor: zoom-in; background: #fafafa; }
+.card .body { padding: 10px 12px; }
+.card .meta { font-size: 12px; color: var(--ink2); margin-bottom: 6px; }
+.badge { font-size: 11px; padding: 1px 8px; border-radius: 8px; margin-right: 6px; }
+.badge.pending  { background: var(--yellow); color: #8a6d00; }
+.badge.approved { background: var(--green);  color: #1c6b3a; }
+.badge.rejected { background: var(--red);    color: #9b2c2c; }
+.badge.changed  { background: var(--orange); color: #8a4b0f; }
+
+.note-box { width: 100%; border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font: inherit; resize: vertical; min-height: 40px; }
+.btn-row { display: flex; gap: 8px; margin-top: 8px; }
+.btn { flex: 1; padding: 7px 0; border: 0; border-radius: 6px; cursor: pointer; font-size: 13px; }
+.btn.ok { background: var(--green-line); color: #fff; }
+.btn.ok:hover { filter: brightness(1.08); }
+.btn.no { background: var(--red-line); color: #fff; }
+.btn.no:hover { filter: brightness(1.08); }
+.btn.ghost { background: #eef1f6; color: var(--ink); }
+
+.evt { font-size: 12px; padding: 6px 0; border-bottom: 1px dashed var(--line); color: var(--ink2); }
+.evt b { color: var(--ink); font-weight: 600; }
+
+/* ---- 浮层 ---- */
+#overlay {
+  position: fixed; inset: 0; background: rgba(15,18,25,.72); z-index: 50;
+  display: flex; flex-direction: column; padding: 18px;
+}
+#overlay.hidden { display: none; }
+#overlay-head { display: flex; gap: 10px; align-items: center; color: #fff; margin-bottom: 10px; }
+#overlay-head button { border: 0; border-radius: 6px; padding: 6px 14px; cursor: pointer; }
+#overlay-body { flex: 1; overflow: auto; display: flex; gap: 14px; align-items: flex-start; }
+#overlay-body img { max-width: 100%; max-height: 100%; border-radius: 6px; cursor: zoom-in; }
+#overlay-body .ver { background: var(--panel); border-radius: 8px; padding: 10px; max-width: 46%; }
+#overlay-body .ver .meta { font-size: 12px; color: var(--ink2); margin-top: 6px; }
+#overlay.full #overlay-body { align-items: center; justify-content: center; }
+#overlay.full .ver { max-width: 96%; background: none; padding: 0; }
+/* 浮层 = 图（左）+ 就地审批面板（右）—— 审批永远针对点开的那张图 */
+#overlay-main { flex: 1; display: flex; gap: 14px; min-height: 0; }
+#overlay-main #overlay-body { flex: 1; }
+#overlay.full #overlay-main #overlay-body { justify-content: center; }
+#overlay-review {
+  flex: 0 0 320px; background: var(--panel); border-radius: 8px; padding: 12px;
+  overflow: auto; align-self: stretch;
+}
+#overlay.full #overlay-review { display: none; }
+
+#toast {
+  position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%);
+  background: #1a2233; color: #fff; padding: 9px 18px; border-radius: 8px; z-index: 99;
+}
+#toast.hidden { display: none; }
+
+/* ---- 顶栏审批队列入口 ---- */
+#btn-queue {
+  border: 1px solid var(--line); background: var(--panel); border-radius: 6px;
+  padding: 5px 12px; cursor: pointer; font-size: 13px; color: var(--ink);
+}
+#btn-queue:hover { border-color: var(--accent); color: var(--accent); }
+#btn-queue .cnt { margin-left: 2px; }
+#btn-queue .cnt:empty { display: none; }
+
+/* ---- 审批队列浮层：大图 + 就地审批，逐张过 ---- */
+#queue {
+  position: fixed; inset: 0; background: rgba(15,18,25,.78); z-index: 60;
+  display: flex; flex-direction: column; padding: 16px;
+}
+#queue.hidden { display: none; }
+#queue-head { display: flex; gap: 12px; align-items: center; color: #fff; margin-bottom: 10px; }
+#queue-head button { border: 0; border-radius: 6px; padding: 6px 14px; cursor: pointer; }
+#queue-pos { color: rgba(255,255,255,.75); font-size: 13px; }
+#queue-main { flex: 1; display: flex; gap: 14px; min-height: 0; }
+#queue-img {
+  flex: 1; display: flex; align-items: center; justify-content: center; min-width: 0;
+  background: rgba(255,255,255,.04); border-radius: 8px; padding: 10px;
+}
+#queue-img img { max-width: 100%; max-height: 100%; border-radius: 6px; cursor: zoom-in; background: #fff; }
+#queue-side {
+  flex: 0 0 340px; background: var(--panel); border-radius: 8px; padding: 14px;
+  overflow: auto; align-self: stretch;
+}
+
+/* ---- 内联图：已驳回 → 占位条（不挂图，文章保持干净） ---- */
+.pf-inline-fig.rejected-strip {
+  max-width: 560px; cursor: pointer;
+  background: var(--red); border-color: var(--red-line);
+}
+.pf-inline-fig.rejected-strip .cap { color: #7a1f1f; border-top: 0; }
+.pf-inline-fig .cap .link { color: var(--accent); text-decoration: underline; cursor: pointer; }

@@ -1,0 +1,6 @@
+{
+  "name": "promptfigure",
+  "version": "0.2.0",
+  "description": "promptFigure 本地插件：为论文配科研图（锚点定位 + 出图 + 审批闭环），随包附带 promptfigure-api / promptfigure-local 两个 skill",
+  "skills": "./skills/"
+}

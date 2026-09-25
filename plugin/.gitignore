@@ -1,0 +1,7 @@
+node_modules/
+__pycache__/
+*.log
+.craft*.json
+.craft_test.txt
+.DS_Store
+.mimosa/
