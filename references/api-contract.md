@@ -95,13 +95,32 @@
 （数十万 token 级），直接打印轻则污染上下文、重则撑爆会话（2026-09-25 实测）。
 照下面的范式：管道进文件，jq 只回显元数据字段。
 
+🔴 **落盘一律用当前目录相对路径，禁用 `/tmp`**（2026-09-25 实测）：Windows 下 Git Bash 的
+`/tmp` 指向 AppData\Local\Temp，而 Windows 版 curl/python 把 `/tmp` 解析成 `<当前盘>:\tmp`——
+两套解析混用会「写入成功但读不到」反复重试，最终交付物还会落在用户找不到的 `C:\tmp`。
+中间产物和最终交付图都放当前工作目录。
+
+🔴 **curl 必须显式 `--max-time 300`**：生成耗时 46s~160s+，很多宿主的 Bash 工具默认 120s
+就掐断命令（2026-09-25 实测连续两次超时返工）。宿主有 timeout 参数的一并设到 300s+。
+⚠️ **注意：`timeout 300 curl …` 救不了宿主工具级的 120s 掐断**——掐的是整个命令不是 curl。
+宿主 Bash 工具支持 timeout 参数的（如 claude CLI）调用时必须显式传（如 `timeout: 300000`）；
+不支持的用后台模式 + 分次轮询：
+```bash
+nohup curl -s --max-time 300 -X POST https://promptfigure.top/api/v1/generate \
+  -H "Authorization: Bearer $PROMPTFIGURE_KEY" -H "Content-Type: application/json" \
+  -d @req.json -o resp.json > curl.log 2>&1 &
+# 之后的工具调用里轮询（每次调用查一次，别在一个命令里 sleep 死等）：
+jq -e '.b64_json' resp.json > /dev/null && echo DONE || echo WAITING
+```
+
 ```bash
 gen() {
-  curl -s -X POST https://promptfigure.top/api/v1/generate \
+  curl -s --max-time 300 -X POST https://promptfigure.top/api/v1/generate \
     -H "Authorization: Bearer $PROMPTFIGURE_KEY" \
     -H "Content-Type: application/json" \
-    -d "$1" | tee /tmp/pf.json | jq -r .b64_json | base64 -d > "${2:-figure.png}"
-  jq '{size,model,crafted,charged,balance,refIgnored}' /tmp/pf.json
+    -d "$1" -o resp.json
+  jq -r .b64_json resp.json | base64 -d > "${2:-figure.png}"
+  jq '{size,model,crafted,charged,balance,refIgnored}' resp.json
 }
 gen '{"prompt":"对比 ResTiNet 和 CNN 在 OCT 分类上的表现，左侧数据流右侧柱状图","model":"premium","ratio":"16:9"}' fig1.png
 # 紧急绕过（平时不需要）：末尾加 "polish":false，且 prompt 需自己写成完整英文专业提示词

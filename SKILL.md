@@ -1,10 +1,10 @@
 ---
 name: promptfigure-api
 description: 用 promptFigure 生成科研/学术配图（流程图、机制图、管线图、技术路线图、图形摘要），以及优化已有图表、整文批量升级（数据图本地重绘 + 示意图 AI 重构 + 追溯台账）。当用户要「画一张图」「生成论文配图/示意图/机制图/graphical abstract」「把论文里的图变好看/变高级」「批量优化整篇文章的图」、给了 PDF/WPS/Word 文稿要配图或要主动建议插图位、或要配置 promptFigure API key、或要用 REST 接口批量出图时使用。走 https://promptfigure.top 的 /api/v1/generate，Bearer pf_ key 鉴权，返回 base64 PNG。强制学术字体规范（图内无衬线、禁手写/花体）与上下文蒸馏规则（原文段落绝不直接进 prompt，先蒸馏成实体/结构/图种三清单再组装）。网页端有多轮问询/二次确认，API 端一次性提交——所以要把用户绘图意图一次说清楚，服务端负责润色成完整示意。
-version: 1.6.2
+version: 1.6.4
 license: MIT
 metadata:
-  version: "1.6.2"
+  version: "1.6.4"
   author: promptFigure (zhangmask)
   homepage: https://promptfigure.top
   repository: https://github.com/zhangmask/promptfigure-skill
@@ -27,7 +27,7 @@ metadata:
 ```
 
 - **阶段 0-2 强制免费前置**：意图没对齐、prompt 没过审，不准调 API。详见 `references/prompt-review-workflow.md`
-- **阶段 4 强制成图审核（审核主体 = 你，宿主 AI）**：插件把标准交给你，审图由你亲自执行。出图 ≠ 交付——按 5 维度（结构保真/文字正确/科研风格/信息密度/母题到位）逐条判 PASS/FAIL，**硬门槛制：任何一维 FAIL 即整图不合格，错一个字母也是 FAIL，不打印象分、不软化**；每张图必须输出固定格式的【成图审核卡】（逐维 + 图上证据 + 修改指令），FAIL 项转成具体 prompt 修改指令回阶段 1 免费迭代。**读图守则：一次一张、大图先缩、发现网关把图片当文本计数（上下文暴涨）立即停**；宿主无视觉/网关不吃图时**必须明示用户并转用户自查，没有读过图绝对禁止输出 PASS（禁止假装审核）**。标准与降级分支详见 `references/prompt-review-workflow.md` 阶段 4
+- **阶段 4 强制成图审核（审核主体 = 你，宿主 AI）**：插件把标准交给你，审图由你亲自执行。出图 ≠ 交付——按 5 维度判定，**铁律：先观察后判定**，每维先写「图上实况」（A 维逐箭头口述 X→Y、C 维答背景/线条两问）再写 PASS/FAIL，先写结论再找证据 = 假审核；**硬门槛制：任何一维 FAIL 即整图不合格，错一个字母也是 FAIL，不打印象分、不软化**。每张图输出固定格式【成图审核卡】（实况 → 判定 → 修改指令），FAIL 项转成具体 prompt 修改指令回阶段 1 免费迭代。**读图守则：先 PIL verify 验完整性（截断图=无效交付，禁审禁交付）、一律读 800px 缩图副本不读原图、2K 图拼写用标签特写、同图不重读、会话读图 ≤3 次**；宿主无视觉/网关不吃图时**必须明示用户并转用户自查，没有读过图绝对禁止输出 PASS（禁止假装审核）**。最终图存**当前目录相对路径**并告知用户，API 调用记台账（`pf-ledger.md`）。标准与降级分支详见 `references/prompt-review-workflow.md` 阶段 4
 - **双 Agent 模式（推荐给用户）**：Agent A（有用户上下文）写提示词，另开 Agent B 按 9 项清单审核 `handoff.json`，pass 才出图——把返工从"花钱买废图"变成"出图前两秒发现"
 - 出图本身一次到位率 >> 边出边改
 
@@ -120,7 +120,7 @@ standard 档的乱码率随**卡面文字量**上升：实测说明性小字是�
 ## 调用
 
 ```bash
-curl -s -X POST https://promptfigure.top/api/v1/generate \
+curl -s --max-time 300 -X POST https://promptfigure.top/api/v1/generate \
   -H "Authorization: Bearer $PROMPTFIGURE_KEY" \
   -H "Content-Type: application/json" \
   -d '{"prompt":"<大白话描述，实体写全>","model":"premium","ratio":"16:9"}'
@@ -135,6 +135,10 @@ curl -s ... | jq -r .b64_json | base64 -d > figure.png
 🔴 **响应必须落文件，禁止直接回显**：响应体含几百 KB 的 base64（约 50 万 token 级别的文本）。
 直接把响应打印/写进对话轻则污染上下文，重则一击撑爆会话（2026-09-25 实测发生过）。
 永远：`curl -o fig.json`（或管道进 jq/base64 落盘）→ 用 jq 只提取 `size/model/crafted/charged/balance` 字段回显。
+🔴 **落盘与交付一律用当前目录相对路径，禁用 `/tmp`**：Windows 下 Git Bash 和 curl/python 对 `/tmp`
+解析不一致（AppData\Local\Temp vs `C:\tmp`），实测导致 8 轮「写成功但读不到」重试、交付物落进用户找不到的 `C:\tmp`。
+🔴 **curl 必须显式 `--max-time 300`**：生成 46s~160s+，宿主 Bash 默认 120s 会掐断（实测连续两次超时返工）。
+`timeout 300 curl` 救不了工具级掐断——Bash 工具有 timeout 参数的显式传 300000，没有的用 nohup 后台 + 分次轮询（见 `references/api-contract.md`）。
 
 ⚠️ **CF WAF 拦 `Python-urllib/*`**（403 error code:1010）。curl / Node / Go / Python `requests` / 浏览器 fetch 都能过；urllib 需加 `User-Agent: Mozilla/5.0`。
 ⚠️ **超时**：客户端 `timeout` 设 **≥ 300s**（完整润色管线是串行 3 次 LLM，premium 2K 偶尔更久）。
