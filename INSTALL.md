@@ -1,6 +1,6 @@
 # 安装这个技能（AI Agent Skill）
 
-> **版本 1.6.4**（2026-09-24）。下载页：https://promptfigure.top/skill 。查最新版：`curl -s https://promptfigure.top/downloads/promptfigure-api.version.json`；本地已装版本看 `SKILL.md` frontmatter 的 `version`。版本语义：主版本=接口不兼容改动（需重读 SKILL.md），次版本=新增能力，修订号=勘误。
+> **版本 1.6.5**（2026-09-24）。下载页：https://promptfigure.top/skill 。查最新版：`curl -s https://promptfigure.top/downloads/promptfigure-api.version.json`；本地已装版本看 `SKILL.md` frontmatter 的 `version`。版本语义：主版本=接口不兼容改动（需重读 SKILL.md），次版本=新增能力，修订号=勘误。
 
 把 `promptfigure-api/` 整个文件夹放进你的 AI 工具的技能目录即可：
 
@@ -29,5 +29,5 @@ curl -s https://promptfigure.top/downloads/promptfigure-api.version.json
 ```
 
 本地 `version` 低于线上 `version` → 到下载页取最新包：https://promptfigure.top/skill
-（直链：https://promptfigure.top/downloads/promptfigure-api.zip ，或 GitHub Release 资产 promptfigure-api-1.6.4.zip）
+（直链：https://promptfigure.top/downloads/promptfigure-api.zip ，或 GitHub Release 资产 promptfigure-api-1.6.5.zip）
 安装说明与 API 文档：https://promptfigure.top/docs/zh-CN/api

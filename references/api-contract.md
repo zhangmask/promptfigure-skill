@@ -105,6 +105,16 @@
 ⚠️ **注意：`timeout 300 curl …` 救不了宿主工具级的 120s 掐断**——掐的是整个命令不是 curl。
 宿主 Bash 工具支持 timeout 参数的（如 claude CLI）调用时必须显式传（如 `timeout: 300000`）；
 不支持的用后台模式 + 分次轮询：
+
+🔴 **禁用宿主 Bash 工具自带的「后台任务」机制跑 curl**（claude CLI 的 run_in_background 等）：
+**会话一结束，未完成的任务直接被杀**——2026-09-25 实测 curl 被这样杀掉后 resp 文件根本没落地，
+宿主却已向用户报告"已提交、预算 $0.04"（虚报）。要后台只允许 `nohup … &`（脱离会话存活）+
+**轮询到 DONE 才能结束回合**；否则一律前台 curl。
+
+🔴 **先核实后宣称**：向用户报告任何进度前必须核实证据——resp 文件存在（`ls`）、
+JSON 合法（`jq '{size,model,crafted,charged,balance}' resp.json` 回显元数据）。
+没核实禁止说「已提交 / 已在生成 / 已计费」。台账 `pf-ledger.md` 每次调用**立即补一行**，禁止空表。
+
 ```bash
 nohup curl -s --max-time 300 -X POST https://promptfigure.top/api/v1/generate \
   -H "Authorization: Bearer $PROMPTFIGURE_KEY" -H "Content-Type: application/json" \
