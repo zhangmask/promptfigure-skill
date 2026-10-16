@@ -136,6 +136,11 @@ main { flex: 1; display: flex; min-height: 0; }
 .btn.no { background: var(--red-line); color: #fff; }
 .btn.no:hover { filter: brightness(1.08); }
 .btn.ghost { background: #eef1f6; color: var(--ink); }
+/* 审批按钮后果说明（三个按钮的区别一眼可见，别让用户猜） */
+.btn-hint { font-size: 11px; color: var(--ink2); margin-top: 6px; line-height: 1.5; }
+/* 审批来源：AI 自批的图必须让人一眼看出来（监督闭环） */
+.by-ai { background: #fde8e8; color: #9b2c2c; border-radius: 8px; padding: 0 6px; font-weight: 600; }
+.by-user { background: #e8f3ec; color: #1c6b3a; border-radius: 8px; padding: 0 6px; }
 
 .evt { font-size: 12px; padding: 6px 0; border-bottom: 1px dashed var(--line); color: var(--ink2); }
 .evt b { color: var(--ink); font-weight: 600; }

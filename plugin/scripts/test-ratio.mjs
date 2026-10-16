@@ -78,9 +78,13 @@ assert.ok(rNone.prompt.includes("Canvas shape:"), "画布句必须存在（画�
 ok("craft 预设缺省/无比例全局兜底路径");
 
 // ---- pngDims / ratioMismatch（用真实图片验证解析器）----
-const figDir = path.join(os.homedir(), ".promptfigure", "projects", "1b0d6cddb9a8");
-const v10 = path.join(figDir, "figures", "fig_20260921043253_c23j", "v10.png");
+// 🔴 不再依赖 ~/.promptfigure 真实项目残留图（1b0d6cddb9a8 已被清理，ENOENT flake）——
+// 用 sharp 现画一张 2560x1440（V10 实图同尺寸），测试自给自足
+const sharpMod = (await import("sharp")).default;
+const v10 = path.join(os.tmpdir(), `pf-ratio-test-${Date.now()}.png`);
+await sharpMod({ create: { width: 2560, height: 1440, channels: 3, background: "#ffffff" } }).png().toFile(v10);
 const dims = pngDims(fs.readFileSync(v10));
+fs.unlinkSync(v10);
 assert.deepEqual(dims, { w: 2560, h: 1440 });
 assert.equal(ratioMismatch("16:9", dims), null, "2560x1440 就是 16:9，不该报不符");
 const bad = ratioMismatch("16:9", { w: 1024, h: 1024 });

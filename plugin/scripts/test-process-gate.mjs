@@ -22,10 +22,22 @@ const assert = (name, cond, detail = "") => {
 };
 
 function pf(args, env = {}) {
-  const r = spawnSync(process.execPath, [path.join(ROOT, "bin", "pf.mjs"), ...args], {
-    cwd: ROOT, encoding: "utf8", timeout: 60000, env: { ...process.env, FORCE_COLOR: "0", ...env },
-  });
-  return { code: r.status ?? 1, out: ((r.stdout || "") + (r.stderr ? "\n" + r.stderr : "")).trim() };
+  // 🔴 本机 spawnSync 管道 stdio EBUSY（2026-10-15：node→node 间歇→持续实锤）——
+  // stdio:'ignore'/文件描述符正常 → 输出落临时文件再读，保持同步语义不动调用点
+  for (let attempt = 0; ; attempt++) {
+    const tmpOut = path.join(os.tmpdir(), `pf-gate-out-${process.pid}-${attempt}.txt`);
+    const fd = fs.openSync(tmpOut, "w");
+    const r = spawnSync(process.execPath, [path.join(ROOT, "bin", "pf.mjs"), ...args], {
+      cwd: ROOT, timeout: 60000, stdio: ["ignore", fd, fd], env: { ...process.env, FORCE_COLOR: "0", ...env },
+    });
+    fs.closeSync(fd);
+    const out = fs.existsSync(tmpOut) ? fs.readFileSync(tmpOut, "utf8") : "";
+    fs.rmSync(tmpOut, { force: true });
+    if (!(r.error?.code === "EBUSY" && attempt < 4)) {
+      return { code: r.status ?? 1, out: out.trim() };
+    }
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250);
+  }
 }
 
 const { docIdOf } = await imp(path.join(ROOT, "src", "config.mjs"));

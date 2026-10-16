@@ -32,12 +32,20 @@ export const FIGURE_CATALOG = [
     think: "① 步骤顺序是什么？箭头方向必须与数据流向一致；② 每一步内部发生什么——拆成 2-4 条内容要点（PaperBanana：每阶段 2-4 条 bullet，多视觉截断）；③ 每个阶段「框里画什么」——缩略图/小条形/形状母题要指定（如 Show a 2x2 grid of tile thumbnails inside the stage）；④ 哪一步是本文贡献——它要视觉突出（主色+放大）；⑤ 双栏图横排，单栏图竖排。",
     guide:
       "Method pipeline figure: a horizontal chain of NUMBERED stages (small numerals or \"Stage 1\"-style title prefixes), each stage a rounded rectangle carrying its title on top and its 2-4 content bullets inside, connected left-to-right by short labelled black arrows showing data flow direction. Where a stage specifies a visual (a thumbnail grid, a mini stacked bar, a shape motif), draw that visual INSIDE the stage box instead of describing it in words. The paper's contribution stage gets the primary hue and a slightly larger box. One reading orientation; stage outputs implied by small glyph shapes between boxes only when no explicit visual was specified.",
+    // 🔴 场景态短 guide（2026-10-13 组词重构）：stages 生成场景叙述段后，几何/箭头/卡片形状
+    // 已由 Scene 段唯一指定，guide 里重复的几何句会与 Scene 冲突（black arrows vs dark-grey
+    // arrows 实测冲突）。只保留 guide 的场景段没有的类型专属语义。
+    guideScene:
+      "Method pipeline figure: number each stage with a small numeral or \"Stage 1\"-style prefix. Where a stage specifies a visual, draw it INSIDE the stage box instead of describing it in words. The paper's contribution stage gets a slightly larger box. One reading orientation.",
     avoid: "no arrowheads pointing backwards unless a genuine feedback loop exists; do not invent stage names or bullet content beyond what was supplied; no empty title-only boxes (every stage carries its listed content); no isometric/3D boxes.",
     example: {
       intent: "Two-stage defect detection pipeline: a coarse filter discards most background patches, then a fine grader classifies the rest",
       entities: "Input Image, Patch Sampler, Coarse Filter, Fine Grader, Defect Map",
-      stages: "Input Image | Show a strip of 3 rail-surface thumbnails || Patch Sampler + Coarse Filter | discard most background patches; keep candidate patches || Fine Grader | vision transformer classifier; output per-patch score || Defect Map | show a small heat-map thumbnail",
-      cmd: 'pf craft --figure-type pipeline --intent "Two-stage defect detection: coarse filter discards background, fine grader scores the rest" --entities "Input Image,Patch Sampler,Coarse Filter,Fine Grader,Defect Map" --stages "Input Image | Show a strip of 3 rail-surface thumbnails || Patch Sampler + Coarse Filter | discard background patches; keep candidates || Fine Grader | vision transformer scoring; per-patch score || Defect Map | show a small heat-map thumbnail" --preset double-column',
+      // 🔴 2026-10-13 卡内空洞复盘：show 句必须写成具体母题（物体+形状+空间关系），
+      // 不许只给术语关键词（图模型对 "vision transformer classifier" 这类抽象短语
+      // 只能画通用小方框涂鸦）。此示例即 types show 范文的母题写法基准。
+      stages: "Input Image | show a strip of 3 rail-surface thumbnails, the middle one carrying a visible crack || Patch Sampler + Coarse Filter | show a grid of small square patches, most faded grey and a few kept in full colour || Fine Grader | show a small stack of rounded blocks with a vertical arrow passing through, ending in a tiny tag chip || Defect Map | show a small square heat-map with one bright spot on a rail strip",
+      cmd: 'pf craft --figure-type pipeline --intent "Two-stage defect detection: coarse filter discards background, fine grader scores the rest" --entities "Input Image,Patch Sampler,Coarse Filter,Fine Grader,Defect Map" --stages "Input Image | show a strip of 3 rail-surface thumbnails, middle one cracked || Patch Sampler + Coarse Filter | show a grid of small square patches, most faded grey, a few in full colour || Fine Grader | show a small stack of rounded blocks with an arrow through, ending in a tag chip || Defect Map | show a small square heat-map with one bright spot" --preset double-column',
     },
   },
   {
@@ -103,8 +111,12 @@ export const FIGURE_CATALOG = [
   {
     id: "comparison",
     name: "对比图（ours vs baseline / before-after）",
-    when: "方法对比、改前改后、消融示意。视觉核心是\"差异\"，不是双方完整细节。",
+    when: "方法对比、改前改后、消融示意。",
     think: "① 对比的维度是什么（质量/速度/结构）？② 对齐排版——同维度水平对齐读者才扫得出差异；③ 两侧用同一组「编号槽位」组织，读者逐槽对比；④ 我们的方法视觉突出（主色），对照安静（灰）；⑤ 中间加分隔或 VS 留白，不要共用边框。",
+    // 🔴 母题框架词（2026-09-26 实测补）：guide 自带 baseline/ours/Slot 框架，
+    // 会被图模型当内容渲染——用 comparison 画"两种构型/两个阶段"而非方法对比时，
+    // 框架词改变的是**图在说什么**（意思错，不是美观问题）。craft 见到本字段会告警。
+    motifWords: ["baseline", "ours", "Slot 1", "Slot 2", "VS"],
     guide:
       "Comparison figure: two aligned panels (left = baseline in neutral grey tones, right = ours in the primary hue), built from the SAME numbered slots inside both panels (Slot 1, Slot 2, ...) so the reader compares slot-by-slot, same internal layout in both so differences pop, a slim divider or whitespace gap between panels; differences emphasised, similarities quiet.",
     avoid: "do not use red-green as the only contrast pair; do not give the baseline deliberately ugly styling; keep panel titles short and parallel; do not put different content in matched slots.",
@@ -193,6 +205,9 @@ export const FIGURE_CATALOG = [
     name: "数据图风格示意（⚠️ 非精确数据图）",
     when: "示意性质的统计图（概念对比柱、趋势示意）。⚠️ 要保留精确数值的结果图禁止 AI 重画——AI 画数字必错，引导用户改绘图脚本（figures4papers / academic-figure-skill 路线）。",
     think: "① 这张图是\"示意\"还是\"承载精确数值\"？后者停手，走改脚本路线；② 示意图里坐标轴只是视觉暗示，刻度文字不写数字；③ 相对大小即信息（A 明显高于 B）；④ 每根柱/每条线对应哪个系列——逐个指定颜色。",
+    // 🔴 母题框架词（2026-09-26 实测补）：示例语境是"ours vs baselines"，
+    // 图型引导会把 Ours/baseline 措辞带进非对比语境的图里。
+    motifWords: ["Ours", "baseline"],
     guide:
       "Schematic data figure: implied axes as thin lines with NO numeric tick labels, bars/curves encoding RELATIVE magnitude only, each series named and colour-assigned individually (focal series in the primary hue, all other series muted grey); clear value difference between series is the message.",
     avoid: "no numeric axis labels, no invented values printed on bars; no 3D bars; if precise numbers matter, do not use AI rendering — modify the plotting script instead.",
@@ -208,6 +223,9 @@ export const FIGURE_CATALOG = [
     name: "多面板组合图 (a)(b)(c)",
     when: "多个子图并列成一张期刊组合图：方法总览+局部细节、多个子实验并列、消融分组展示。期刊论文最常见的主图形态（academic-figure-skill / nature-figure 路线）。",
     think: "① 每个 panel 只讲一个子信息——panel 顺序与正文引用顺序一致；② panel 间字号/线宽/配色必须完全一致（割裂感是组合图头号死因）；③ (a)(b)(c) 编号统一放各 panel 左上角，粗体小写；④ 图例共享还是各自带？逐个指定；⑤ panel 尺寸一致或按内容权重明确分配（如 左 1/3 + 右 2/3）。",
+    // 🔴 母题框架词（2026-09-26 实测补）：(a)(b)(c) 编号与共享图例会被过度执行，
+    // 单幕图/两格对比被强加 panel 编号 = 图上出现原文没有的结构。
+    motifWords: ["(a)", "(b)", "(c)", "legend"],
     guide:
       "Multi-panel composite figure: labelled panels arranged on a clean grid, each panel carrying a bold lowercase letter label ((a), (b), (c)) at its top-left corner; every panel internally uses the same font size, stroke weight and colour assignments; a single shared legend when series repeat across panels; panel widths stated by the user are honoured exactly; thin separators or whitespace between panels, never decorative frames.",
     avoid: "no numeric axis tick labels or invented measured values in any panel; do not vary font size or palette between panels; no empty panels (each panel shows its supplied content); panel labels must not float far from their panels; do not repeat the same legend twice.",
@@ -231,23 +249,27 @@ export const OKABE_ITO_ROLES =
 export const SEMANTIC_COLOR_DEFAULT =
   "Palette — Okabe-Ito colorblind-safe scientific palette (Nature Methods / Wong 2011), use EXACTLY these hues and no others: " +
   OKABE_ITO_ROLES + ". " +
-  "Every block gets an explicit assignment: fills are a very light tint of that hue (roughly 10-12% opacity on white), " +
-  "borders are the full-strength hue at consistent 1.5pt weight, text is near-black #1A1A1A. " +
+  // 🔴 2026-10-13 美学修正（CVPR 优化实测）：旧契约 "very light tint 10-12% opacity" 实渲出来
+  // 是白卡片细边框的线稿风（QA Q7 彩色像素占比仅 0.1% 的根因之一），与论文原图的
+  // 饱和粉彩填充卡片差距巨大。改为实心粉彩填充 + 同色系深色描边。
+  "Every block gets an explicit assignment: fills are a solid soft pastel of that hue (clearly tinted on white, roughly 25-35% tint — NEVER pure white or a barely-visible wash), " +
+  "borders are the full-strength hue at consistent 1.5pt weight, title text in the same hue, body text near-black #1A1A1A. " +
   "Never print hex codes as visible text on the figure; never pair red-vs-green as the only distinction.";
 
 // 缺省阶段/区块配色序列（craft 按序循环取色并写死到每个阶段上）
+// 🔴 2026-10-13 美学修正：tint 从 "very light … tint"（实渲=白卡线稿）改为实心粉彩
 export const STAGE_COLOR_CYCLE = [
-  { name: "deep blue #0072B2", tint: "very light blue tint" },
-  { name: "sky blue #56B4E9", tint: "very light sky-blue tint" },
-  { name: "bluish green #009E73", tint: "very light green tint" },
-  { name: "orange #E69F00", tint: "very light orange tint" },
-  { name: "reddish purple #CC79A7", tint: "very light purple tint" },
+  { name: "deep blue #0072B2", tint: "soft pastel blue fill" },
+  { name: "sky blue #56B4E9", tint: "soft pastel sky-blue fill" },
+  { name: "bluish green #009E73", tint: "soft pastel green fill" },
+  { name: "orange #E69F00", tint: "soft pastel orange fill" },
+  { name: "reddish purple #CC79A7", tint: "soft pastel purple fill" },
 ];
 
-// "deep red #C0392B" → "very light red tint"（抠掉 hex 剩下的词当色相名）；纯 hex → 兜底措辞
+// "deep red #C0392B" → "soft red pastel fill"（抠掉 hex 剩下的词当色相名）；纯 hex → 兜底措辞
 function tintOf(name) {
   const hueWords = name.replace(/#[0-9a-fA-F]{3,8}\b/g, "").trim().toLowerCase();
-  return hueWords ? `very light ${hueWords} tint` : "very light tint of this hue";
+  return hueWords ? `soft ${hueWords} pastel fill` : "a soft pastel fill of this hue";
 }
 
 // 用户给的色板令牌（数组或逗号/分号分隔串）→ [{name, tint}]；坏令牌丢弃

@@ -79,20 +79,30 @@ export const HEX_NAMED_COLORS = [
 export const STYLE_BASELINE = [
   "White background, clean publication-grade canvas.",
   "Flat editorial rendering: NO drop shadows, NO glow, NO gradient decoration unless explicitly requested; separate elements with crisp borders or whitespace.",
-  "Restrained semantic palette: 2-4 hues plus neutral greys/black/white; one accent colour on at most 1-2 focal elements; colourblind-safe pairing (never red-vs-green as the only distinction).",
+  // 🔴 属性唯一化（2026-10-13 组词重构）：本句只管 DATA 编码用色的总原则；
+  // 阶段/模块的身份配色已在场景叙述段逐卡指定，这里只留指针不重复填充公式（原豁免句删除）。
+  "Restrained semantic palette: 2-4 hues for DATA encodings (chart series, heat levels); per-stage or per-module identity colours follow the Scene description exactly; colourblind-safe pairing (never red-vs-green as the only distinction).",
   "Exactly THREE visible text tiers — figure title/panel headers (largest), element/series labels (medium), annotations/axis numbers (smallest); keep total text items low (ideally under 15 short labels).",
   "All lines and text crisp anti-aliased edges, print-quality, no sketch texture.",
   "Keep at least a quarter of the canvas calm (whitespace is part of the design).",
 ].join(" ");
 
+// ---------- 视觉语法块（2026-10-13 调研 PaperBanana 6.8k★ 后新增） ----------
+// 来源：dwzhu-pku/PaperBanana style_guides/neurips2025_diagram_style_guide.md（104 行）蒸馏。
+// PaperBanana 把完整指南喂给 Stylist agent；pf 无 Stylist，直接蒸馏成紧凑语义系统
+// 拼进图模型提示词——形状/线条/字体/图标各管一层语义，图模型照语义画而不是瞎猜。
+// 🔴 保持紧凑（~700B）：提示词越长上游越慢（CF 100s 天花板，524 风险）；上限现为 32000 字节但别当免费额度用。
+export const VISUAL_GRAMMAR = [
+  "Visual grammar — semantics to follow: rounded rectangles = processes/stages; sharp rectangles and flat grids = data, matrices, attention maps; cuboid stacks = tensors; cylinders = storage; dashed-outline containers = logical scopes or optional paths. Solid arrows = main data flow; dashed lines = auxiliary flow (gradients, skips, optional paths). Module labels sans-serif (bold titles); math variables serif italic. Flame/lightning icon = trainable, snowflake = frozen (small flat glyphs only).",
+].join(" ");
+
 // ---------- 视觉负向项（图模型有效约束，非自省句）----------
 // 源: promptcraft.js COMMON_RULES Avoid L46 + UNIVERSAL_CRAFT Rendering L83
 // + TECH_RULES L174（no lens flare / no photorealistic branding）
+// 🔴 2026-10-13 组词重构瘦身：只留纯负面且不与他段重复（阴影/光晕/渐变已由
+// STYLE_BASELINE 的 flat editorial 句负责，此处删除重复项）；≤8 条放提示词尾部。
 export const NEGATIVE_LIST = [
   "no watermark or logos",
-  "no drop shadows",
-  "no glow",
-  "no gradient decoration",
   "no 3D chart junk",
   "no photographic textures unless asked",
   // 🔴 2026-09-21 premium v7 实测：图模型自加了清单外的 bullet 注释/箭头连接词/图例项，
@@ -100,12 +110,8 @@ export const NEGATIVE_LIST = [
   "no text on the figure beyond the quoted stage titles and entity labels (no self-added bullets, arrow captions, legend entries or numbering; no full sentences printed inside cards — card text is short labels only)",
   "abstract placeholder shapes stay abstract plain shapes (a 'white rounded rectangle' is NOT a photograph of a real scene)",
   "no dense text blocks",
-  "no decorative clutter",
-  // ⚠️ "no invented data" 已删（weak-model-eval 2026-09-20）：它是写手元评论而非视觉负向项，
-  // 会被自家 SELF_NARRATION_PATTERNS 误删（规则源冲突），对图模型也无画面意义。防编造归 writerGuard。
-  "no decorative pictograms or object icons (vegetable sketches, molecule doodads, product silhouettes) unless explicitly asked",
-  "no lens flare",
-  "no photorealistic branding",
+  "no decorative clutter, pictograms or object icons (vegetable sketches, molecule doodads, product silhouettes) unless explicitly asked",
+  "no lens flare or photorealistic branding",
 ];
 
 // ---------- 版式预设（对标竞品"产物直接投稿可用"）----------
@@ -122,9 +128,9 @@ export const PRESET_LAYOUTS = {
 // 宿主 AI 亲眼读图逐条核验用的。竞品用 VLM 评委 + 重画闭环；本地版把"评委"交给宿主
 // AI 的视觉能力（零成本），清单必须可判定（看一眼有答案），不打分。
 export const QA_CHECKLIST = [
-  "Q1 文字卫生 — 图内没有乱码/伪文字（gibberish glyphs）、没有拼错的英文单词；带文字的图必须 premium 出稿（standard 渲文字必乱码）。",
-  "Q2 实体逐字 — 🔴 先把图上全部可见文字逐条列出（一张都不许漏），再逐条对照白名单（阶段标题+实体清单）：多一条、改一字、多一句都算失败；卡面出现完整说明句（任何语言：明显长于标签、带句读或含助词/动词句尾，且不是实体/标题）= 直接 FAIL（V11 事故：说明句被印进卡面，抽样式核验漏检）。",
-  "Q3 结构保真 — 箭头方向/流程顺序/包含关系与声明的结构一致；机制图的因果方向错 = 直接重画（ confidently wrong 比 omit 更糟）。",
+  "Q1 文字卫生（通道级，2026-09-26 重新定级）— standard 档出文字 = 通道选错（该档渲染文字必乱码，实测）：换 premium/矢量通道重出，属通道问题不算设计缺陷、不占精修账；premium/矢量仍出乱码/伪文字/拼错词 = 阻断级 FAIL。图上有清单之外的文字（含被印上图的 show 句/要点/缺陷文本）= Q2 处理，不归本条款。",
+  "Q2 实体逐字 — 🔴 先把图上全部可见文字逐条列出（一张都不许漏），再逐条对照白名单（阶段标题+实体清单）：多一条、改一字、多一句都算失败；🔴 编号/轴标签序列也要查（1-8 出现重复或缺失 = 错标签，阻断级）；卡面出现完整说明句（任何语言：明显长于标签、带句读或含助词/动词句尾，且不是实体/标题）= 直接 FAIL（V11 事故：说明句被印进卡面，抽样式核验漏检）。",
+  "Q3 结构保真 — 箭头方向/流程顺序/包含关系与声明的结构一致；机制图的因果方向错 = 直接重画（ confidently wrong 比 omit 更糟）；🔴 承载意思的几何必须精确（2026-09-26 Swin 实测：网格分界线位置/偏移量/坐标轴刻度与声明不一致 = 意思错，阻断级——示意类图的近似几何才按观察级放行）。",
   "Q4 无编造 — 图上没有清单之外的新模块、新曲线、新数值、新图例项；数出来的元素个数与实体数一致。",
   "Q5 版式与底色 — 布局只有一种阅读朝向；版式预设（双栏/单栏）符合；留白占画布 1/10~1/3：少于 1/10 拥挤，🔴 多于 1/3 = 内容带没撑满画布 = FAIL（V11 事故：上下空白带 >40%，排进双栏后文字会被压得极小）；🔴 背景必须纯白 —— 重点检查四角与空白区域的淡淡斑块/纸张纹理/有机斑点底纹，不是刺眼的白 = 不过（standard 档高发，实测出现过且极易漏检）。",
   "Q6 配色与装饰 — 色板 ≤ 4 色相 + 中性色；无红绿唯一区分；hex 码没有作为文字印在图上；无阴影/渐变/3D 装饰；🔴 无装饰性图形符号（鸟兽/人物/器物小剪影点缀）——除非实体清单明确要求（standard 档高发，实测出现过）。",
@@ -155,4 +161,48 @@ export const OUTPUT_GUARD_LINES = [
   // 源: promptcraft.js hexGuard L410-415 + labelPurityGuard L427-430（确定性追加守卫，本地一并钉死）
   "Apply colours directly to the shapes they belong to — never print hex codes or colour values as visible text on the figure, and do not draw a colour legend that names the colours.",
   "Render every quoted label exactly once, exactly as quoted — do not add English translations or synonyms alongside them, never duplicate a label, and do not prefix labels with list markers the label text does not include.",
+];
+
+// ---------- 卡内母题映射：数据类型→学术原语（2026-10-14 重构，对标真人画法）----------
+// 🔴 2026-10-13 版教训（standard 档渲染出人脸照片、购物风勾选徽章）：旧词典试图
+// "发明具象图标"，错在层次——真人零参考画方法图从不发明图标，而是【按流过模块的
+// 数据类型选学术原语】（图像→小图块、特征图→薄片堆叠、图结构→节点连线、
+// 存储→圆柱…），再按操作类型选原语变体（增广→同块镜像阵列、融合→多箭头汇入）。
+// 本表 = 原语映射（前半，数据类型键）+ 操作变体（后半，操作词键），措辞全部学术化：
+//   - "photo thumbnail" → "image tile"（photo 一词会引出人脸照片，禁用）
+//   - "check badge" 等发明性具象物全部删除
+// 顺序敏感：原语在前、变体在后？不——变体更具体，同池匹配时【变体在前、原语兜底】，
+// 首个命中生效；未命中时 craft 告警宿主 AI 从 provenance 取真实数据类型自行映射。
+export const MOTIF_HINTS = [
+  // —— 操作变体（同数据原语的具体画法，最具体、优先）——
+  { re: /\b(?:h ?flip|horizontal fl|mirror)\b/i, icon: "two small image tiles side by side, the right one a mirrored copy of the left, joined by a short double-headed arrow" },
+  { re: /\b(?:v ?flip|vertical fl|rotate|tilt)\b/i, icon: "two small image tiles, the second slightly rotated, joined by a curved arrow" },
+  { re: /\b(?:scale|rescale|resize|zoom|down ?sample|up ?sample)\b/i, icon: "a small image tile beside a smaller copy of itself, joined by a short diagonal arrow" },
+  { re: /\b(?:crop|patch|tile)\b/i, icon: "a small image tile with a dashed square marking a cropped region, the dashed region shown beside it" },
+  { re: /\b(?:tta|multi[- ]?view|augment)\b/i, icon: "three small image tiles arranged in a slight fan, each a copy of the same tile" },
+  { re: /\b(?:residual|difference|subtract|delta)\b/i, icon: "two small image tiles with a circled minus sign between them" },
+  { re: /\b(?:ssim|similarity|metric|psnr)\b/i, icon: "two small image tiles aligned side by side with a small gauge arc between them" },
+  { re: /\b(?:localiz|detect|bounding)\b/i, icon: "a small image tile with two bold rectangular boxes drawn over it" },
+  { re: /\b(?:candidate|proposal|region)\b/i, icon: "a loose cluster of small overlapping rectangles in varying sizes" },
+  { re: /\b(?:fuse|fusion|merge|consensus|weighted|aggregate|ensemble)\b/i, icon: "three small tiles with short arrows converging into one bolder tile" },
+  { re: /\b(?:filter|keep|drop|prune|select|threshold|suppress)\b/i, icon: "a row of small tiles, most drawn solid and two drawn dashed" },
+  { re: /\b(?:refine|iterat|loop|optimiz|optimis)\b/i, icon: "two small tiles joined by a circular loop arrow" },
+  { re: /\b(?:reconstruct|restore|generat|enhance|super[- ]?res|\bsr\b|hr\b|deblur)\b/i, icon: "a blurred image tile transforming into a sharp copy along a short arrow" },
+  { re: /\b(?:classif|grader|head|predict)\b/i, icon: "several thin lines converging into a single short bold bar" },
+  { re: /\b(?:loss|train|gradient)\b/i, icon: "a small descending curve on miniature axes" },
+  { re: /\b(?:input|lr|low[- ]?res|blur)\b/i, icon: "a row of two small image tiles, the left one blurred and the right one sharp, joined by a small arrow" },
+  // —— 数据类型→学术原语（零参考主兜底：流过什么数据就画什么原语）——
+  { re: /\b(?:feature map|conv|kernel|cnn)\b/i, icon: "a stack of three overlapping square feature maps drawn in slight perspective" },
+  { re: /\b(?:embedding|latent|vector|token sequence|feature vector)\b/i, icon: "a short row of small shaded squares representing a feature vector" },
+  { re: /\b(?:heat ?map|saliency|attention|score map)\b/i, icon: "a small square heat-map, bright at the centre fading toward the edges" },
+  { re: /\b(?:graph|node|edge|topolog)\b/i, icon: "a tiny node-edge diagram of four circles joined by thin lines" },
+  { re: /\b(?:curve|plot|chart|trend)\b/i, icon: "a miniature line chart with two short axes and a smooth rising curve" },
+  { re: /\b(?:table|matrix)\b/i, icon: "a small grid table with a highlighted header row" },
+  { re: /\b(?:database|storage|cache|memory|dataset)\b/i, icon: "a small cylinder glyph" },
+  { re: /\b(?:text|document|token|prompt)\b/i, icon: "a small document sheet with faint horizontal text lines" },
+  { re: /\b(?:iou|matching|correspond)\b/i, icon: "two small rows of squares with thin lines matching squares in the top row to the bottom row" },
+  { re: /\b(?:transformer|encoder|decoder|block|layer|module)\b/i, icon: "a small stack of rounded blocks with a thin vertical arrow passing through" },
+  { re: /\b(?:output|result|final)\b/i, icon: "a small image tile drawn slightly larger than the others with a thicker border" },
+  { re: /\b(?:box|rectangl|frame|region)\b/i, icon: "a few small rectangles of different sizes, mostly solid with one dashed" },
+  { re: /\b(?:image|thumbnail|frame|photo|video|view)\b/i, icon: "a small square image tile with rounded corners and a thin border" },
 ];

@@ -5,3 +5,15 @@ __pycache__/
 .craft_test.txt
 .DS_Store
 .mimosa/
+
+# GUI/压测产物（不进仓库）
+/*.craft.json
+/prompt.txt
+/rt*.txt
+/fz-victim.txt
+/fz-noext
+temp-*
+fig*-*.txt
+fig*.txt
+rpb-*.txt
+*.prompt.txt

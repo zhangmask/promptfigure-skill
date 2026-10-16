@@ -407,21 +407,27 @@ function paintFigures() {
 // ---------- 审批控件（侧栏卡片与浮层共用 —— 审批永远针对具体的图） ----------
 function reviewControls(f) {
   const rev = state.review[f.figureId] || { status: "pending", note: "" };
+  const byLabel = rev.by === "ai" ? '<span class="by-ai" title="这条判定是 AI 写的，不是你——请自己看一眼图再改判">⚠ AI 判定</span>'
+    : rev.by === "user" ? '<span class="by-user" title="你本人点的">本人</span>' : "";
   const box = document.createElement("div");
   box.className = "review-ctl";
   box.innerHTML = `
-    <div class="meta">${badgeOf(rev.status)} <b>${escapeHtml(f.figureId)}</b> @${escapeHtml(f.at)} · ${escapeHtml(latestVer(f).model)}${f.versions.length > 1 ? ` · ${f.versions.length} 版` : ""}</div>
+    <div class="meta">${badgeOf(rev.status)} <b>${escapeHtml(f.figureId)}</b> @${escapeHtml(f.at)} · ${escapeHtml(latestVer(f).model)}${f.versions.length > 1 ? ` · ${f.versions.length} 版` : ""}${byLabel ? ` · 审批来源 ${byLabel}` : ""}</div>
     ${rev.note ? `<div class="meta">意见：${escapeHtml(rev.note)}</div>` : ""}
-    <textarea class="note-box" placeholder="哪里不对？（可选，AI 会读到）"></textarea>
+    <textarea class="note-box" placeholder="写哪里不对或建议（AI 会读到；点「驳回」请写具体缺陷）"></textarea>
     <div class="btn-row">
       <button class="btn ok" data-act="approve">通过</button>
       <button class="btn no" data-act="reject">驳回</button>
     </div>
+    <div class="btn-hint">通过后 AI 才能出高清定稿 · 驳回 = AI 按意见重画 · 反馈 = 只提建议、图仍待你审批</div>
     <div class="btn-row"><button class="btn ghost" data-act="feedback">提交反馈给 AI</button></div>`;
   box.querySelectorAll("[data-act]").forEach((btn) => {
     btn.onclick = async () => {
       const note = box.querySelector(".note-box").value.trim();
       const act = btn.dataset.act;
+      // 驳回不带意见 = AI 只能盲改（精修状态机拿不到具体缺陷）——拦一道
+      if (act === "reject" && !note &&
+          !confirm("驳回但没写意见 —— AI 只能盲改。\n建议在上方写清楚哪里不对；确定要空意见驳回？")) return;
       const status = act === "approve" ? "approved" : act === "feedback" ? "pending" : "rejected";
       const resp = await fetch(`/api/review?doc=${DOC}`, {
         method: "POST",
@@ -429,8 +435,8 @@ function reviewControls(f) {
         body: JSON.stringify({ token: TOKEN, figureId: f.figureId, status, note }),
       });
       const data = await resp.json();
-      if (!resp.ok) return toast("提交失败：" + (data.error || resp.status));
-      toast(act === "approve" ? "已通过，AI 可以出定稿了" : act === "feedback" ? "反馈已提交，AI 会读到" : "已驳回");
+      if (!resp.ok) return toast((data.message || data.error) ? "提交失败：" + (data.message || data.error) : "提交失败：" + resp.status);
+      toast(act === "approve" ? "已通过，AI 会接着出高清版" : act === "feedback" ? "反馈已提交，AI 会读到" : "已驳回，AI 会按你的意见重画");
       await loadState(); paintAll();
       // 审批队列开着 → 这张已离开队列，原位自动落到下一张
       if (!$("#queue").classList.contains("hidden")) renderQueue();

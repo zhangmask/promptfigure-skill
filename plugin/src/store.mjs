@@ -76,12 +76,71 @@ function writeJson(file, data) {
   fs.renameSync(tmp, file); // 原子替换，防写坏
 }
 
+// ---- 跨进程项目写锁（2026-09-25 双智能体实测修复）----
+// 症状：两个宿主 AI 同时操作同一项目（多智能体同机 = 真实场景）时，
+// read-modify-write 互相覆盖——一方刚出的新版图/审批记录整段消失，
+// 智能体日志原话「两次覆盖 meta.json 致我的新版注册丢失」。
+// 机制：项目目录内独占锁文件（wx 创建）+ 锁内重读合并；写锁只包住
+// 磁盘写本身，不嵌套持有（所有调用方都是 写完即放，无重入）。
+const LOCK_NAME = ".pf-write.lock";
+function withLock(dir, fn, { timeoutMs = 10000, staleMs = 30000 } = {}) {
+  const lockPath = path.join(dir, LOCK_NAME);
+  const t0 = Date.now();
+  const nap = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  for (;;) {
+    try {
+      const fd = fs.openSync(lockPath, "wx"); // 独占创建 = 拿到锁
+      fs.writeSync(fd, `${process.pid} ${new Date().toISOString()}`);
+      fs.closeSync(fd);
+      break;
+    } catch (e) {
+      if (e.code !== "EEXIST") throw e;
+      try {
+        // 持锁进程崩了 → 锁文件超龄 → 破锁（防死等）
+        if (Date.now() - fs.statSync(lockPath).mtimeMs > staleMs) { fs.unlinkSync(lockPath); continue; }
+      } catch { continue; } // 锁刚好被释放：立刻重试
+      if (Date.now() - t0 > timeoutMs) {
+        throw new Error(`项目写锁等待超时（另一进程卡在 ${lockPath}；确认无进程占用后可手动删除该锁文件）`);
+      }
+      nap(20 + Math.random() * 40);
+    }
+  }
+  try { return fn(); } finally { try { fs.unlinkSync(lockPath); } catch { /* 已被破锁删掉：无感 */ } }
+}
+
+// 合并语义：并发写入按「键」保留双方成果，而不是整文件 Last-Writer-Wins
+function mergeMeta(cur, incoming) {
+  if (!cur) return incoming;
+  const out = { ...cur };
+  for (const k of ["docId", "source", "fileName", "kind", "blocks", "outline", "styleCard"]) {
+    if (incoming[k] !== undefined) out[k] = incoming[k];
+  }
+  if (Date.parse(incoming.parsedAt || 0) >= Date.parse(cur.parsedAt || 0)) out.parsedAt = incoming.parsedAt;
+  out.figures = { ...(cur.figures || {}) };
+  for (const [fid, fig] of Object.entries(incoming.figures || {})) {
+    const prev = out.figures[fid];
+    // 同图并发重渲：取版本多的一方（append-only 不变量），另一方事件/文件仍在账本里可查
+    out.figures[fid] = !prev || (fig.versions?.length || 0) >= (prev.versions?.length || 0) ? { ...prev, ...fig } : prev;
+  }
+  return out;
+}
+
 export const readMeta = (docId) => readJson(path.join(projectByDocId(docId), "meta.json"), null);
-export const writeMeta = (docId, meta) => writeJson(path.join(projectDir(docId), "meta.json"), meta);
+export const writeMeta = (docId, meta) => withLock(projectDir(docId), () => {
+  writeJson(path.join(projectDir(docId), "meta.json"), mergeMeta(readJson(path.join(projectDir(docId), "meta.json"), null), meta));
+});
 export const readAnchors = (docId) => readJson(path.join(projectByDocId(docId), "anchors.json"), []);
-export const writeAnchors = (docId, arr) => writeJson(path.join(projectDir(docId), "anchors.json"), arr);
+export const writeAnchors = (docId, arr) => withLock(projectDir(docId), () => {
+  const cur = readJson(path.join(projectDir(docId), "anchors.json"), []) || [];
+  const byId = new Map(cur.map((a) => [a.id, a]));
+  for (const a of arr) byId.set(a.id, a); // 同 id 覆盖、新 id 追加——并发布点互不抹
+  writeJson(path.join(projectDir(docId), "anchors.json"), [...byId.values()]);
+});
 export const readReview = (docId) => readJson(path.join(projectByDocId(docId), "review.json"), {});
-export const writeReview = (docId, obj) => writeJson(path.join(projectDir(docId), "review.json"), obj);
+export const writeReview = (docId, obj) => withLock(projectDir(docId), () => {
+  const cur = readJson(path.join(projectDir(docId), "review.json"), {}) || {};
+  writeJson(path.join(projectDir(docId), "review.json"), { ...cur, ...obj }); // 按图合并：一张图的审批不冲掉另一张
+});
 
 export function saveFigureFile(docId, figureId, fileName, buf) {
   const dir = path.join(projectDir(docId), "figures", figureId);

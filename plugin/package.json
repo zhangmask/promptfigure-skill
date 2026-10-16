@@ -1,6 +1,6 @@
 {
   "name": "promptfigure",
-  "version": "0.3.0",
+  "version": "0.3.3",
   "description": "promptFigure 本地插件：在你的 AI 宿主（Codex / Claude Code 等）里为论文配科研图。开文档（LaTeX 本地编译）、画锚点、本地规则层组装提示词、调出图、收审批。npm 安装即附带 promptfigure-local / promptfigure-api 两个 Agent Skill。",
   "type": "module",
   "bin": {
@@ -31,7 +31,8 @@
     "@visioncortex/vtracer": "^1.0.0-alpha.4",
     "docx-preview": "^0.3.3",
     "jszip": "^3.10.1",
-    "pdfjs-dist": "3.11.174"
+    "pdfjs-dist": "3.11.174",
+    "sharp": "^0.35.5"
   },
   "keywords": [
     "promptfigure",

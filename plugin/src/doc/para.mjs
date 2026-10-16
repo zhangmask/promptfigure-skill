@@ -3,11 +3,13 @@
 
 export function parseRef(ref) {
   if (!ref || typeof ref !== "string") throw new Error("锚点引用必须是字符串，如 \"§3.2 ¶2\"");
-  const m = /^\s*§?\s*([\d.]+)\s*(?:¶\s*(\d+))?\s*$/.exec(ref);
+  // 🔴 2026-09-27 分隔符容错（实测：宿主 shell 会把 ¶ 吞成 P 或 -，合法引用被拒）：
+  // ¶ / P / p / - / — / 空白 都当段序分隔符；§ 可省。语义不变，不因终端编码反弹。
+  const m = /^\s*[§Ss]?\s*([\d.]+)\s*(?:[¶Pp\-—–]\s*(\d+)|\s+(\d+))?\s*$/.exec(ref);
   if (!m) {
-    throw new Error(`无法解析锚点引用 "${ref}"。格式：§<章节路径> ¶<段序>，例如 "§3.2 ¶2"（¶ 缺省时指该章节标题本身）`);
+    throw new Error(`无法解析锚点引用 "${ref}"。格式：§<章节路径> ¶<段序>，例如 "§3.2 ¶2"（¶ 缺省时指该章节标题本身；¶ 被终端吞成 P 或 - 也能识别）`);
   }
-  return { secPath: m[1].replace(/\.$/, ""), para: m[2] ? parseInt(m[2], 10) : 0 };
+  return { secPath: m[1].replace(/\.$/, ""), para: m[2] || m[3] ? parseInt(m[2] || m[3], 10) : 0 };
 }
 
 export function resolveRef(blocks, ref) {

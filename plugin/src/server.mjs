@@ -121,6 +121,24 @@ export function startServer({ port, registerDaemon = true }) {
         const body = await readBody(req);
         if (body.token !== guiToken) return json(res, 403, { error: "bad session token" });
         const doc = u.searchParams.get("doc");
+        // 🔴 QA 门禁对齐 CLI（2026-09-25 双智能体实测发现的放水后门）：
+        //    GUI 通过审批此前不查 QA——AI 可以自己先点通过再补 QA，CLI 的硬闸被 GUI 绕过。
+        //    现在 approve 与 CLI 同尺：最新版 QA 通过 + 量化依据 + 图文件存在，缺一拒绝。
+        //    驳回/反馈不受限（它们不是放水动作）。
+        if (body.status === "approved") {
+          const meta = readMeta(doc);
+          const fig = meta?.figures?.[body.figureId];
+          if (fig) {
+            const { qaState, isQuantifiedNote } = await import("./quality.mjs");
+            const qs = qaState(fig);
+            if (!qs.fresh || qs.verdict !== "pass" || !isQuantifiedNote(qs.qa?.note)) {
+              return json(res, 409, {
+                error: "qa_required",
+                message: `图 ${body.figureId} 还没有通过的 QA 核验记录——先在终端跑 pf qa ${body.figureId} 亲眼核验并 --pass 写回，再来通过审批`,
+              });
+            }
+          }
+        }
         const r = setStatus(doc, body.figureId, body.status, body.note, "user");
         return json(res, 200, { ok: true, review: r });
       }
@@ -197,10 +215,21 @@ async function cliAction(doc, action, params) {
       const meta = readMeta(doc);
       const { parseRef } = await import("./doc/para.mjs");
       const { secPath } = parseRef(params.at);
-      const paras = meta.blocks.filter((b) => b.type === "para" && b.secPath === secPath).map((b) => b.text);
+      // 🔴 2026-09-25 双智能体实测修复：此前只返回 type==="para" 并按列出序 1..N 编号，
+      //    与锚点解析（resolveRef 把 caption 也算进 ¶ 号）是两套编号——AI 按 context 的
+      //    ¶2 取素材，锚点 ¶2 其实是图注，「段号与锚点真实段号不一致」的根因。
+      //    现在：按文档顺序返回 para+caption 两种块，每个带【真实 para 号】和类型标记，
+      //    context 的编号与锚点/审批/doc figures 完全同一套。
+      const blocks = meta.blocks.filter((b) => (b.type === "para" || b.type === "caption") && b.secPath === secPath);
       // 🔴 红队实测（2026-09-23 fuzz）：§99 等不存在章节静默返回 0 字 = AI 拿空上下文去编素材
-      if (!paras.length) throw new Error(`章节 §${secPath} 不存在或没有正文段落（--at: ${params.at}）——用 pf doc outline 看有效章节，或 pf doc search 定位关键词`);
-      return { section: secPath, paragraphs: paras, chars: paras.join("").length };
+      if (!blocks.length) throw new Error(`章节 §${secPath} 不存在或没有正文段落/图注（--at: ${params.at}）——用 pf doc outline 看有效章节，或 pf doc search 定位关键词`);
+      return {
+        section: secPath,
+        blocks: blocks.map((b) => ({ para: b.para, type: b.type, text: b.text })),
+        // 兼容旧字段：paragraphs 仍给（按真实 ¶ 号的文本），新代码用 blocks
+        paragraphs: blocks.map((b) => b.text),
+        chars: blocks.map((b) => b.text).join("").length,
+      };
     }
     default:
       throw new Error(`未知 action: ${action}`);

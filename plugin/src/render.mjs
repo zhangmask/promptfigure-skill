@@ -5,6 +5,8 @@
 // 🔴 polish:false —— 本地 AI 写的提示词直接出图，服务端不润色
 // 🔴 premium 代码级门禁 —— 未 approved 的图禁止出 premium（不靠提示词自觉）
 // 🔴 计费通道切换必须留痕（事件流 billing.fallback）
+import fs from "node:fs";
+import path from "node:path";
 import { loadConfig, maskKey } from "./config.mjs";
 import { readMeta, writeMeta, saveFigureFile, resolveDoc, readAnchors, readReview } from "./store.mjs";
 import { appendEvent } from "./events.mjs";
@@ -42,7 +44,7 @@ async function callGenerate(url, key, body) {
   return { status: resp.status, ok: resp.ok, data };
 }
 
-export async function renderFigure({ docId, prompt, model = "standard", at, side = "after", ratio, force = false, forceReason = null, sidecar = null }) {
+export async function renderFigure({ docId, prompt, model = "standard", at, side = "after", ratio, force = false, forceReason = null, sidecar = null, promptFile = null, ref = null, replica = false }) {
   const cfg = loadConfig();
   if (!cfg.key) {
     throw new Error("还没有配置 pf_ API key。先运行 pf login（控制台创建 key 后：pf login pf_xxxxx）");
@@ -76,14 +78,44 @@ export async function renderFigure({ docId, prompt, model = "standard", at, side
 
   // ---- 红线 2：premium 门禁（代码级，不靠提示词） ----
   // --force 豁免（2026-09-21 定规）：多轮精修循环会死锁——修正轮要真实渲染视觉缺陷，
-  // 但缺陷只有 premium 渲得出（standard 渲文字必乱码），而门禁要求先审批通过、审批要求零缺陷。
+  // 但缺陷只有 premium 渲得出（standard 档文字质量不可靠：字符乱码或内容污染/轴错乱，
+  // 2026-09-27 四样本复测证实），而门禁要求先审批通过、审批要求零缺陷。
   // force = 显式声明"这轮是已授权的修正迭代"，事件留痕 figure.gate_bypass 可审计，默认仍锁死。
+  // 🔴 2026-09-27：拒绝信息给**可复制的完整命令**（实测：旧文案让宿主自己想"--force 理由怎么写"，
+  // 新手在"先烧一次 standard 乱码"和"不会写理由"之间打转；带文字的图应直接 premium）。
   const figures = meta.figures || {};
   const prevFig = anchor?.figure ? figures[anchor.figure] : null;
+  // 提示词文件名（门禁拒绝信息里给可复制的完整命令用）：CLI 原样下发最准；
+  // 兜底从 sidecar 反推（craftSidecarPath 是替换扩展名生成的，p.txt → p.craft.json，
+  // 所以反推只能拿到主干，扩展名按 craft 文档约定补 .txt）；再拿不到就占位符。
+  const pfFile = typeof promptFile === "string" && promptFile.trim()
+    ? promptFile.trim()
+    : (typeof sidecar === "string" && sidecar.endsWith(".craft.json")
+      ? sidecar.slice(0, -".craft.json".length) + ".txt"
+      : null);
+  const pfArg = pfFile ? `--prompt-file ${pfFile}` : "--prompt-file <你 craft 时的提示词文件>";
   if (model === "premium" && !force) {
-    if (!prevFig) throw new Error(`premium 门禁拒绝：位置 ${at} 还没有 standard 草稿。下一步: pf craft … --out p.txt 然后 pf render --at "${at}" --model standard --prompt-file p.txt（修正迭代轮可用 --force "理由" 豁免，事件留痕）`);
+    if (!prevFig) {
+      throw new Error(
+        `premium 门禁拒绝：位置 ${at} 还没有 standard 草稿。\n` +
+        `  选择A（文字图推荐，别烧 standard 乱码轮）——直接复制：\n` +
+        `    pf render --at "${at}" --model premium ${pfArg} --force "文字图不走 standard: ${at} 首轮定稿"\n` +
+        `  选择B（先出草稿验证布局）——先复制：\n` +
+        `    pf render --at "${at}" --model standard ${pfArg}\n` +
+        `  （--force 必须带理由，事件留痕 pf audit 可查）`
+      );
+    }
     if (!isApproved(docId, prevFig.figureId)) {
-      throw new Error(`premium 门禁拒绝：图 ${prevFig.figureId} 尚未审批通过。下一步: pf review ai ${prevFig.figureId}（AI 核验）→ pf review resolve ${prevFig.figureId} --approve；或在 GUI 审批队列点「通过」（修正迭代轮可用 --force "理由" 豁免，事件留痕）`);
+      throw new Error(
+        `premium 门禁拒绝：图 ${prevFig.figureId} 尚未审批通过。\n` +
+        `  若这是修正轮（缺陷只有 premium 渲得出）——直接复制：\n` +
+        `    pf render --at "${at}" --model premium ${pfArg} --force "修正轮: ${prevFig.figureId} 精修定稿"\n` +
+        `  若要正规审批——先复制：\n` +
+        `    pf review ai ${prevFig.figureId}   # AI 核验出任务包\n` +
+        `    pf qa ${prevFig.figureId} --pass --note "量化依据"   # 亲眼读图后写回\n` +
+        `    pf render --at "${at}" --model premium ${pfArg}   # 再跑本命令\n` +
+        `  用户也可在 GUI 审批队列点「通过」`
+      );
     }
   }
   if (model === "premium" && force && prevFig) {
@@ -97,9 +129,62 @@ export async function renderFigure({ docId, prompt, model = "standard", at, side
     appendEvent(docId, "render.forced", { at, model, reason: forceReason || "(无理由)", ts: new Date().toISOString() });
   }
 
+  // ---- 通道告警（2026-09-26 Swin 实测定级）：standard + 图带文字 = 白烧 ----
+  // 该档渲染文字必乱码（实测 "image profersising" 级），Q1 必然 FAIL；带文字的图
+  // （实体标签/阶段标题非空）应直接 premium。告警不拦截（standard 草稿测布局仍合法），
+  // 但要把代价说在扣费前——宿主知情后自己决定。
+  if (model === "standard") {
+    const hasText = /Named entities \(keep verbatim\)|PRINTABLE TEXT WHITELIST/i.test(prompt)
+      || Boolean(String(sidecar?.entities || "").trim());
+    if (hasText) {
+      appendEvent(docId, "render.channel_warn", { at, model, ts: new Date().toISOString() });
+      console.error("⚠️ 本图带文字标签而选了 standard 档：该档渲染文字必乱码（实测），QA Q1 会 FAIL。");
+      console.error('   建议直接 premium 出图（pf render --model premium --force "文字图不走 standard"）；standard 草稿只适合验证布局/配色。');
+    }
+  }
+
+  // ---- 复刻参考图（2026-10-13）：--ref prev|<png> → img2img 条件；--replica → 服务端一键临摹 ----
+  // 复刻要成立，出图模型必须看得见参考图：refDataUrl 走服务端 resolveReference → img2img，
+  // 布局/母题被参考图锁住，提示词只写"要改什么"（polish:false 原样直达）。没有这一步，
+  // "复刻"实际是每次从零盲掷 —— 草图明明已批准、定稿却总漂的结构性原因。
+  let refDataUrl = null;
+  let refSource = null;
+  if (ref) {
+    let rp = String(ref).trim();
+    if (rp === "prev") {
+      if (!prevFig?.versions?.length) {
+        throw new Error(`--ref prev 失败：位置 ${at} 还没有已渲染的版本（第一次出图没有"上一版"可复刻）。先 standard 出草稿，或直接给 --ref <png路径>`);
+      }
+      rp = path.join(dir, prevFig.versions[prevFig.versions.length - 1].file);
+    }
+    if (!fs.existsSync(rp)) throw new Error(`--ref 参考图不存在：${rp}`);
+    const refBuf = fs.readFileSync(rp);
+    const PNG_SIG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    if (refBuf.length < 8 || !refBuf.subarray(0, 8).equals(PNG_SIG)) {
+      throw new Error(`--ref 参考图不是 PNG：${rp}（服务端只收 PNG，非 PNG 会被静默忽略变盲画。先转 PNG 再试）`);
+    }
+    const refB64 = refBuf.toString("base64");
+    if (refB64.length > 8 * 1024 * 1024) {
+      throw new Error(`--ref 参考图 base64 后 ${Math.round(refB64.length / 1048576)}MB 超服务端上限（8MB）——压缩或缩小分辨率后重试`);
+    }
+    refDataUrl = `data:image/png;base64,${refB64}`;
+    refSource = path.basename(rp);
+    appendEvent(docId, "render.ref", {
+      figure: prevFig?.figureId || null, ref: refSource,
+      mode: replica ? "replica" : "img2img", ts: new Date().toISOString(),
+    });
+    console.error(replica
+      ? `🖌 一键临摹：参考图 ${refSource} 交服务端视觉轮读出结构规格后重写提示词（mode=replica）`
+      : `🖌 复刻模式：参考图 ${refSource} 以 img2img 条件进出图模型 —— 布局/母题由参考图锁住，提示词描述要改什么`);
+  }
+
   // ---- 出图（402 自动换余额通道） ----
   const body = { prompt: prompt.trim(), model, polish: false };
   if (ratio) body.ratio = ratio;
+  if (refDataUrl) {
+    body.refDataUrl = refDataUrl;
+    if (replica) body.mode = "replica";
+  }
   let channel = "quota";
   let resp = await callGenerate(GEN_URL, cfg.key, body);
   if (resp.status === 402 && resp.data?.error === "quota_exhausted") {
@@ -129,6 +214,13 @@ export async function renderFigure({ docId, prompt, model = "standard", at, side
   }
   const verNo = prevFig ? prevFig.versions.length + 1 : 1;
   const file = `v${verNo}.png`;
+  // 🔴 参考图被服务端忽略 = 本次实际是"无参考盲画"且已计费——必须响亮告警，不许静默
+  const refIgnored = Boolean(resp.data?.refIgnored);
+  if (refIgnored) {
+    appendEvent(docId, "render.ref_ignored", { figure: figureId, version: verNo, ref: refSource, ts: new Date().toISOString() });
+    console.error("⚠️ 参考图被服务端忽略（refIgnored=true）——本次是**无参考盲画**且已计费，复刻要求没有被满足！");
+    console.error("   常见原因：上游 img2img 通道不可用（如 premium /images/edits 故障）。读图核验重点看布局漂移；持续出现请换档位或稍后重试。");
+  }
   let imgBuf = Buffer.from(resp.data.b64_json, "base64");
   // ---- 画布比核验（2026-09-21 V10 事故补的闭环）：对**裁剪前**像素算 —— 白边裁剪是预期行为，
   // 裁后比例对不上请求比不是事故（V14 后：2560x685 vs 16:9 是正常产出）----
@@ -174,6 +266,9 @@ export async function renderFigure({ docId, prompt, model = "standard", at, side
     autoChecks,
     // craft 伴随 JSON 路径（pf refine 重拼下一轮命令的依据）
     sidecar: sidecar || null,
+    // 🔴 复刻留痕（2026-10-13）：本版是否带参考图（img2img/临摹）以及是否被服务端忽略
+    ref: refDataUrl ? { source: refSource, mode: replica ? "replica" : "img2img" } : null,
+    refIgnored: refIgnored || undefined,
     at: now.toISOString(),
   };
   meta.figures = meta.figures || {};
@@ -222,8 +317,10 @@ export async function renderFigure({ docId, prompt, model = "standard", at, side
   }
 
   const notes = [];
-  if (model === "standard") notes.push("草稿已入库，等用户在 GUI 审批；通过后才可出 premium 定稿");
+  if (model === "standard") notes.push("草稿已入库，等用户在 GUI 审批；通过后出 premium 定稿（--ref prev 可让定稿复刻这版布局）");
   else notes.push("定稿已生成，高亮会转为绿色");
+  if (refDataUrl && !refIgnored) notes.push(`复刻模式：参考图 ${refSource} 已作为 img2img 条件${replica ? "（一键临摹，结构规格见 referenceSpec）" : ""}`);
+  if (refIgnored) notes.push("⚠️ 参考图被服务端忽略，本次实为无参考盲画（已计费），不要当复刻结果送审");
   if (ratioIssue) {
     notes.push(`⚠️ 画布比不符：请求 ${body.ratio}，实测 ${version.pixels}（偏差 ${ratioIssue.dev}%）—— 宽幅内容可能被压缩/裁切，读图核验后决定是否重出`);
   }

@@ -18,10 +18,13 @@ import { resolveRef } from "../src/doc/para.mjs";
 import { writeMeta, projectDir, readMeta, resolveDoc, readReview, readAnchors } from "../src/store.mjs";
 import { readEvents, appendEvent } from "../src/events.mjs";
 import { craftSidecarPath, readCraftSidecar, parseRatio } from "../src/ratio.mjs";
+import { loadRefsIndex } from "../src/refs.mjs";
 import { computeNext } from "../src/next.mjs";
 import { buildPlan } from "../src/plan.mjs";
 import { setStatus } from "../src/review.mjs";
 import { hasEvidence, lastEvidence, logEvidence, shaOf, EVIDENCE_WINDOW_MS } from "../src/ledger.mjs";
+import { montageStrip } from "../src/montage.mjs";
+import { comparePanels, compareRows } from "../src/compare.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // 🔴 版本号唯一源 = package.json（npm 发布什么，pf --version 就报什么）。
@@ -91,6 +94,12 @@ promptFigure 本地插件 v${VERSION} —— 在你的 AI 宿主里为论文配�
                                      （不传 --ratio 时自动继承 craft 伴随 JSON 里的画布比）
                                      🔴 执行留证门：真实渲染前必须先 --dry-run 排练过（24h 内有记录，
                                         零成本暴露引用错/预算爆/画布不符），没排练就烧钱会被拒
+                                     [--ref prev | <草图.png>] 复刻：参考图以 img2img 条件进出图模型，
+                                        布局/母题被参考图锁住，提示词只写"要改什么"。
+                                        --ref prev = 上一版（premium 定稿复刻已批准草稿布局的标准做法）；
+                                        --ref <png> = 论文原图/手绘草图/任意参考
+                                     [--replica] 一键临摹：服务端视觉轮读参考图出结构规格再写提示词
+                                        （prompt 可只写要点，如"改成中文标注"；必须配合 --ref）
   pf render list [--at "§3.2 ¶2"]
   pf qa-list                         渲染后视觉核验清单（每张图出来后必须过一遍）
   pf qa <figureId>                   🔴 核验闭环：输出核验任务包（体检数字+实体清单+阶段画法清单+Q1-Q9），
@@ -181,14 +190,38 @@ async function stageChecklistLines(sidecarPath) {
   } catch { return null; }
 }
 
-// 从图元数据重拼下一轮 craft 命令（refine 与 qa --fail 共用；sidecar 全量输入 + 活跃修正全集）
+// 🔴 QA 清单三镜头分组（2026-09-27，用户定位：插件做工作流，教宿主 AI 审查
+// **大体的结构和风格**——不是逐字母纠察）。内部编号不变，只按镜头重组呈现：
+// 宿主每跑一次 QA 就被训练一次这套审查框架。
+const QA_LENSES = [
+  { name: "结构（大形）", intro: "布局契约/构图/版面——这张图的骨架对不对", qs: ["Q3", "Q5", "Q9"] },
+  { name: "风格（大感觉）", intro: "配色/装饰/线条/印刷可读/全文统一——这套视觉语言对不对", qs: ["Q6", "Q7"] },
+  { name: "保真（说的是原文、画的是契约）", intro: "实体与结构有无出处、有无编造、文字是不是你写的契约——内容对不对", qs: ["Q1", "Q2", "Q4", "Q8"] },
+];
+function printQaChecklist(QC, indent = "  ") {
+  const byQ = {};
+  QC.forEach((c) => { const m = /^(Q\d+)/.exec(c); if (m) byQ[m[1]] = c; });
+  const known = new Set(QA_LENSES.flatMap((l) => l.qs));
+  QA_LENSES.forEach((lens) => {
+    const items = lens.qs.map((q) => byQ[q]).filter(Boolean);
+    if (!items.length) return;
+    console.log(`${indent}── 镜头「${lens.name}」：${lens.intro}`);
+    items.forEach((c) => console.log(`${indent}${indent}${c}`));
+  });
+  // 兜底：新增未归类的 Q 原样打印，防静默丢失
+  QC.forEach((c) => { const m = /^(Q\d+)/.exec(c); if (m && !known.has(m[1])) console.log(`${indent}${c}`); });
+}
+
+// 从图元数据重拼下一轮 craft 命令（refine 与 qa --fail 共用；sidecar 全量输入）
+// 🔴 2026-09-27：不再把活跃修正拼成 --fixes —— 实测（两次独立复现）缺陷文本会被
+// 图模型原样印上图（"Q2"/"Baseline" 上图）。修正的正确归宿是写进 --stages 措辞；
+// 活跃修正只以「沉淀指引」形式随命令打印（见 settleGuidance）。
 function refineCommand(fig) {
   const last = fig.versions[fig.versions.length - 1];
   const sidecarPath = last?.sidecar;
   if (!sidecarPath || !fs.existsSync(sidecarPath)) return null;
   const sc = JSON.parse(fs.readFileSync(sidecarPath, "utf8"));
   const q = (s) => `'${String(s || "").replace(/'/g, "'\\''")}'`;
-  const fixesAll = (fig.activeFixes || []).join("; ");
   return [
     "pf craft",
     sc.figureType ? `--figure-type ${sc.figureType}` : "",
@@ -200,9 +233,19 @@ function refineCommand(fig) {
     sc.entities ? `--entities ${q(sc.entities)}` : "",
     sc.stages ? `--stages ${q(sc.stages)}` : "",
     sc.colors ? `--colors ${q(sc.colors)}` : "",
-    fixesAll ? `--fixes ${q(fixesAll)}` : "",
+    sc.geometry ? `--geometry ${q(sc.geometry)}` : "",
     `--out temp-refine-${Date.now() % 100000}.txt`,
   ].filter(Boolean).join(" ");
+}
+// 活跃修正的沉淀指引（随 craft 命令打印）——把修正写进 stages 措辞，不要传 --fixes。
+function settleGuidance(fig) {
+  const fixes = fig.activeFixes || [];
+  if (!fixes.length) return [];
+  const lines = [`   ⚠️ 有 ${fixes.length} 条活跃修正——**把每条修正改写进上面的 --stages 措辞后执行**，不要加 --fixes：`];
+  fixes.forEach((x, i) => lines.push(`     (${i + 1}) ${x}  → 写成 stages 里的画法/标签约束（如 "no legend" 写进 show 句）`));
+  lines.push(`   已在新版图上看守住的修正：pf refine ${fig.figureId} --settle "<修正原文>" 移除（防提示词超 32000 字节预算）。`);
+  lines.push(`   缺陷文本一旦进了任何参数，图模型会把它当文字印上图（2026-09-26/27 两次实测）。`);
+  return lines;
 }
 function arg(flag) {
   const hits = [];
@@ -218,6 +261,27 @@ function arg(flag) {
   return hits.length ? process.argv[hits[0] + 1] : undefined;
 }
 function has(flag) { return process.argv.includes(flag); }
+
+// ---- 派生图版本落库（2026-10-15 用户定规「数据库里要有不同版本优化后的图片记录存储」）----
+// montage 重排/assemble 成图等"优化后"的图，凡给了 --doc 都复制进项目 figures/derived/
+// 并按 <slot>_v<N>.png 递增版本，appendEvent(asset.derived) + derived/index.json 双记录
+// ——用户可审计每一版优化：源图是什么、动了什么参数、产物在哪。
+function registerDerived(docId, { slot, file, op, source, params }) {
+  const derDir = path.join(projectDir(docId), "figures", "derived");
+  fs.mkdirSync(derDir, { recursive: true });
+  const existing = fs.readdirSync(derDir).filter((f) => f.startsWith(`${slot}_v`) && f.endsWith(".png")).length;
+  const version = existing + 1;
+  const regPath = path.join(derDir, `${slot}_v${version}.png`);
+  fs.copyFileSync(file, regPath);
+  const ts = new Date().toISOString();
+  const rec = { slot, version, op, source, params, file: regPath, ts };
+  appendEvent(docId, "asset.derived", rec);
+  const idxPath = path.join(derDir, "index.json");
+  const idx = fs.existsSync(idxPath) ? JSON.parse(fs.readFileSync(idxPath, "utf8")) : [];
+  idx.push(rec);
+  fs.writeFileSync(idxPath, JSON.stringify(idx, null, 2), "utf8");
+  return { version, regPath };
+}
 
 // ---- --force 收口（2026-09-22）：硬闯必须带理由 ----
 // 红队实测：裸 --force 绕遍全部门禁且审计日志查不出动机 = 留痕了也无法追究。
@@ -453,6 +517,18 @@ async function fetchReleaseNotes(latest) {
   }
 }
 
+// semver 比较：只有 registry 的 latest 严格大于本地版本才提示
+// （此前只做字符串不等比较——latest=0.3.0 而本地 0.3.2 时误报「有新版本」）
+function isNewer(latest, local) {
+  const parse = (v) => String(v || "").replace(/^v/, "").split(".").map((n) => parseInt(n, 10) || 0);
+  const a = parse(latest), b = parse(local);
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const d = (a[i] || 0) - (b[i] || 0);
+    if (d !== 0) return d > 0;
+  }
+  return false;
+}
+
 function printUpdateHint(latest, notes) {
   console.log(`⬆️  pf 有新版本 v${latest}（当前 v${VERSION}）—— 升级：npm i -g promptfigure`);
   for (const n of notes) console.log(`   · ${n}`);
@@ -465,13 +541,13 @@ async function maybeHintUpdate() {
     let cache = {};
     try { cache = JSON.parse(fs.readFileSync(UPDATE_CACHE, "utf8")); } catch { /* 首次/损坏：当没查过 */ }
     if (Number(cache.checked_at) && now - Number(cache.checked_at) < UPDATE_TTL_MS) {
-      if (cache.latest && cache.latest !== VERSION) printUpdateHint(String(cache.latest), Array.isArray(cache.notes) ? cache.notes : []);
+      if (cache.latest && isNewer(cache.latest, VERSION)) printUpdateHint(String(cache.latest), Array.isArray(cache.notes) ? cache.notes : []);
       return;
     }
     const latest = await fetchLatestVersion();
-    const notes = latest && latest !== VERSION ? await fetchReleaseNotes(latest) : [];
+    const notes = latest && isNewer(latest, VERSION) ? await fetchReleaseNotes(latest) : [];
     try { fs.writeFileSync(UPDATE_CACHE, JSON.stringify({ checked_at: now, latest, notes })); } catch { /* 缓存写不进就每次现查，功能不依赖它 */ }
-    if (latest && latest !== VERSION) printUpdateHint(latest, notes);
+    if (latest && isNewer(latest, VERSION)) printUpdateHint(latest, notes);
   } catch { /* 更新检查是锦上添花：任何意外都不许影响用户真正的命令 */ }
 }
 
@@ -589,6 +665,564 @@ async function main() {
       return;
     }
 
+    case "provenance": {
+      // 🔴 图级溯源回放（2026-10-13 provenance P0，对标调研见 ref-provenance-research.md）：
+      // 任意新会话的宿主 AI 一条命令恢复这张图的全部上下文——锚点/原文摘录/原图与数据文件
+      // （绝对路径+sha1，tex 来源）/版本史/QA 结论/活跃修正。老项目无字段时优雅降级。
+      const docId = path.basename(resolveDoc(arg("--doc")));
+      const meta = readMeta(docId);
+      const atArgP = arg("--at");
+      const fidP = rest[0] && !rest[0].startsWith("--") ? rest[0] : null;
+      if (!fidP && !atArgP) {
+        die('用法: pf provenance <figureId> 或 pf provenance --at "§3.2 ¶2"（--doc 缺省用当前项目）',
+          "pf doc figures 看现有图与锚点；pf provenance 的答案也可以直接喂给用户问“这张图数据哪来的”");
+      }
+      const anchors = readAnchors(docId) || [];
+      let anchor = null, fig = null;
+      if (fidP) {
+        fig = meta.figures?.[fidP];
+        if (!fig) die(`未知 figureId "${fidP}"（pf doc figures 看现有图）`);
+        anchor = anchors.find((a) => a.figure === fidP) || null;
+      } else {
+        anchor = anchors.find((a) => a.placement?.at === atArgP) || null;
+        fig = anchor?.figure ? meta.figures?.[anchor.figure] : null;
+        if (!anchor) console.error("⚠️ 该位置没有锚点——只显示原文上下文与同节原图溯源。");
+      }
+      const at = anchor?.placement?.at || atArgP;
+      console.log("═══ 图级溯源（provenance）═══");
+      console.log(`锚点: ${at || "(未锚定)"}${anchor ? ` | figure=${anchor.figure || "(未链接)"} | side=${anchor.placement?.side || "-"}` : ""}`);
+      if (anchor?.placement?.quote) console.log(`锚点引文: ${anchor.placement.quote.slice(0, 120)}`);
+      if (fig) {
+        const last = (fig.versions || []).at(-1);
+        console.log(`渲染: ${fig.versions?.length || 0} 版${last ? ` | 最新 ${last.file}（${last.model}，${last.at}）` : ""} | QA: ${JSON.stringify(fig.qa ?? "未跑")} | 活跃修正: ${(fig.activeFixes || []).length}`);
+      } else {
+        console.log("渲染: 该锚点尚无已链接的图（未 render 或老项目未链 figure）");
+      }
+      // 原文摘录：锚点 ±1 段（on-demand 从 blocks 计算——老项目零迁移可用）
+      if (at) {
+        try {
+          const target = resolveRef(meta.blocks || [], at);
+          const idx = (meta.blocks || []).findIndex((b) => b.secPath === target.secPath && b.para === target.para);
+          if (idx >= 0) {
+            const near = (meta.blocks || []).slice(Math.max(0, idx - 1), idx + 2)
+              .filter((b) => b.type === "para" || b.type === "caption");
+            console.log("── 原文摘录（锚点 ±1 段）──");
+            near.forEach((b) => console.log(`  [${b.type === "caption" ? "图注" : "段落"} ${b.secPath} ¶${b.para}] ${(b.text || "").slice(0, 200)}`));
+            // 同节原图/数据文件溯源（tex 来源才有 materials；docx/pdf 优雅降级提示）
+            const caps = (meta.blocks || []).filter((b) => b.type === "caption" && b.materials?.length && b.secPath === target.secPath);
+            if (caps.length) {
+              console.log("── 同节原图/数据文件（tex provenance，sha1 校验防替换）──");
+              for (const c of caps) {
+                console.log(`  [图注 ${c.secPath} ¶${c.para}] ${(c.text || "").slice(0, 80)}${c.labels?.length ? `  label: ${c.labels.join(", ")}` : ""}`);
+                for (const m2 of c.materials) {
+                  console.log(`    ${m2.role}: ${m2.path}${m2.sha1 ? ` (sha1 ${m2.sha1.slice(0, 12)}…)` : " (⚠️ 文件不存在或解析不到)"}`);
+                }
+                if (c.refParagraphs?.length) console.log(`    被引用于: ${c.refParagraphs.map((r2) => `${r2.secPath} ¶${r2.para}`).join(", ")}`);
+              }
+            }
+          }
+        } catch (e) {
+          console.error(`⚠️ --at 引用无效：${e.message}`);
+        }
+      }
+      return;
+    }
+
+    case "refs": {
+      // 🔴 参考库检索（2026-10-14 参考链路 P0）：从顶会真实论文图（PaperBananaBench，
+      // NeurIPS 2025 方法图 590 张）检索同模块画法，宿主 AI 多模态看图提炼规范画法。
+      // 位置：distill 之后、craft 之前。查询包（本名+同义词+类别族+操作动词）由宿主 AI
+      // 生成，本命令只做确定性 BM25 排序——零依赖、零 API 成本、离线可用。
+      const q0 = rest[0] && !rest[0].startsWith("--") ? rest[0] : null;
+      const qPackArg = arg("--queries");
+      const queries = [];
+      if (q0) queries.push(q0);
+      if (qPackArg) for (const q of String(qPackArg).split(/[;|]/)) if (q.trim()) queries.push(q.trim());
+      if (!queries.length) {
+        die('用法: pf refs "<模块名/意图>" --queries "同义词;类别族;操作动词" [--k 5] [--min 0.15] [--json]',
+          "查询包由你（宿主 AI）扩写：模块本名 + 英文同义词 + 类别族（如 augmentation module）+ 操作动词。" +
+          "检索是文本 BM25——模块名搜不到时类别族大概率搜得到；全没中走原语映射兜底（SKILL.md 零命中链）。");
+      }
+      const k = Math.max(1, Math.min(20, parseInt(arg("--k") || "5", 10) || 5));
+      const minRatio = parseFloat(arg("--min") || "0.15") || 0.15;
+      const refsDir = arg("--refs-dir") || path.join(os.homedir(), ".promptfigure", "references");
+      const idx = loadRefsIndex(refsDir);
+      if (!idx || !idx.docs.length) {
+        die(`参考库不存在或为空：${refsDir}`,
+          "下载 PaperBananaBench（hf-mirror.com/datasets/dwzhu/PaperBananaBench）解压到该目录，或用 --refs-dir 指向已有库");
+      }
+      const { results, total, topScore } = idx.search(queries, { k, minScore: minRatio });
+      if (has("--json")) {
+        console.log(JSON.stringify({ queries, totalCandidates: total, topScore, results: results.map((r) => ({ id: r.id, score: +(r.score / (topScore || 1)).toFixed(3), nQueries: r.nQueries, category: r.fig.figType, image: r.fig.imageAbs, caption: r.fig.caption, excerpt: r.bestChunk })) }, null, 1));
+        return;
+      }
+      console.log(`═══ pf refs 参考检索（${idx.docs.length} 张顶会真实论文图）═══`);
+      console.log(`查询包: ${queries.join(" | ")}`);
+      if (!results.length) {
+        console.log("\n❌ 零命中（阈值 " + (minRatio * 100).toFixed(0) + "% of top）——不要发明具象图标！走零命中链：");
+        console.log("   ① 从 provenance/materials 取该模块的真实数据类型（图像/特征图/向量/图结构/标量…）");
+        console.log("   ② 按原语映射写 show 句（SKILL.md 原语表）；③ 或改用用户原图 --ref 临摹");
+        return;
+      }
+      results.forEach((r, i) => {
+        console.log(`\n${i + 1}. [${(r.score / (topScore || 1)).toFixed(2)}] ${r.id} · ${r.fig.figType || "?"}${r.nQueries > 1 ? ` · ${r.nQueries} 个查询命中` : ""}`);
+        console.log(`   图: ${r.fig.imageAbs}`);
+        console.log(`   图注: ${r.fig.caption.slice(0, 220)}${r.fig.caption.length > 220 ? "…" : ""}`);
+        if (r.bestChunk) console.log(`   正文: ${r.bestChunk.slice(0, 220)}…`);
+      });
+      console.log("\n── 使用规则（宿主 AI 必读）──");
+      console.log("• 逐张【打开图片看】回答两问：① 这张图画的方法模块与我们要画的是同类吗？② 画法值得模仿吗（结构清晰/学术规范/母题可提炼）？两个都过才把画法写进 show 句");
+      console.log("• 只提炼画法（怎么画），不搬内容（画什么）——内容必须来自用户文档");
+      console.log("• 最相关的图可直接临摹布局: pf render --ref \"<图路径>\" …");
+      console.log("• 全部不过 = 零命中 → show 句由原语映射生成（SKILL.md），并提示用户可补参考图");
+      return;
+    }
+
+    case "render-icon": {
+      // 🔴 分部分出图（2026-10-14 用户定规「一张图要多图层多部分区分开」）：整图一把渲
+      // 画不好复杂小图标——icon 槽位（{{icon:名|描述}}）的小图单独渲染，compose 再统一贴入。
+      // 每个 icon 一次 standard 小图渲染（1:1 白底无字），渲完登记进伴随 JSON icons 段，
+      // compose 自动查表贴入。--dry-run 只列清单不烧额度。
+      const pFileI = toWinPath(arg("--prompt-file"));
+      if (!pFileI) die("用法: pf render-icon --prompt-file <p.txt> [--name <icon名> | --all] [--model standard]",
+        "icon 槽位在 craft --scene 里用 {{icon:名|描述}} 声明；伴随 JSON 的 slots 里 kind=icon 的就是待渲小图。");
+      const scI = readCraftSidecar(pFileI);
+      if (!scI) die(`伴随 JSON 不存在（${path.basename(craftSidecarPath(pFileI))}）——先 pf craft --scene 产出`, "icon 小图的描述/配色契约都在伴随 JSON 里，没有它渲不了");
+      const iconSlots = (scI.slots || []).filter((s) => s.kind === "icon");
+      if (!iconSlots.length) die("伴随 JSON 里没有 icon 槽位（scene 里没写 {{icon:名|描述}}）——只有复杂图标才单独渲；几何元素（箭头/方框）让整图直接画就行。");
+      const nameArg = arg("--name");
+      const targets = nameArg ? iconSlots.filter((s) => s.name === nameArg) : iconSlots;
+      if (nameArg && !targets.length) die(`找不到 icon 槽位 "${nameArg}"——伴随 JSON 里有：${iconSlots.map((s) => s.name).join("、")}`);
+      const docIdI = path.basename(resolveDoc(arg("--doc")));
+      const styleI = scI.colors ? `Colour palette: ${scI.colors}.` : "Colour palette: restrained academic palette (Okabe-Ito colourblind-safe).";
+      if (has("--dry-run")) {
+        console.log(`【DRY-RUN】将渲 ${targets.length} 张 icon 小图（${arg("--model") || "standard"} · 1:1 白底无字）：`);
+        targets.forEach((s) => console.log(`  · ${s.name} ← ${s.value}`));
+        return;
+      }
+      for (const s of targets) {
+        const iconPrompt =
+          `Small standalone icon illustration on a pure white background, no text, no letters, no numbers, ` +
+          `publication-grade flat vector style, clean sharp edges, centered with generous margins: ${s.value}. ` +
+          `${styleI} No watermark, no drop shadows, no gradient decoration, no photorealistic textures.`;
+        const outI = await callDaemon("render", {
+          prompt: iconPrompt, model: arg("--model") || "standard",
+          promptFile: pFileI, at: scI.at || die("伴随 JSON 缺 at 锚点"), side: "after",
+          ratio: "1:1", force: false, forceReason: null, sidecar: path.resolve(craftSidecarPath(pFileI)),
+          ref: null, refQuality: null, replica: false,
+        }, docIdI);
+        // 从图库取渲好的文件，复制成 icon 素材（compose 查表用）
+        const metaI = readMeta(docIdI);
+        const figI = (metaI.figures || {})[outI.figureId];
+        const relI = figI?.versions?.[figI.versions.length - 1]?.file;
+        if (!relI) { console.error(`⚠️ ${s.name}：渲好了但取不到图文件（figureId ${outI.figureId}）——跳过登记`); continue; }
+        const absI = path.join(projectDir(docIdI), relI);
+        const iconDir = path.join(projectDir(docIdI), "figures", "icons");
+        fs.mkdirSync(iconDir, { recursive: true });
+        const iconPath = path.join(iconDir, `${s.name}.png`);
+        fs.copyFileSync(absI, iconPath);
+        scI.icons = { ...(scI.icons || {}), [s.name]: iconPath };
+        console.log(`✅ icon "${s.name}" 已渲并登记：${iconPath}（figureId ${outI.figureId}，留库可审计）`);
+        try {
+          appendEvent(docIdI, "icon.rendered", { name: s.name, figureId: outI.figureId, file: iconPath, at: new Date().toISOString() });
+        } catch { /* 记账失败不阻塞 */ }
+      }
+      fs.writeFileSync(path.resolve(craftSidecarPath(pFileI)), JSON.stringify(scI, null, 2), "utf8");
+      const leftI = iconSlots.filter((s) => !(scI.icons || {})[s.name]);
+      console.log(leftI.length ? `⏭ 未渲完：${leftI.map((s) => s.name).join("、")}（--name 单独渲）` : "⏭ 全部 icon 就绪 → 重跑 pf compose 贴入");
+      return;
+    }
+
+    case "assemble": {
+      // 🔴 模板装配（2026-10-14 二轮返工）：**排版交给浏览器引擎**（高星项目共识——mermaid/D2
+      // 用 dagre/ELK，AutoFigure 用真实渲染器；手写坐标实锤出留白/错位）。本命令发 HTML/CSS
+      // （flexbox 拉平等宽、行高按内容实测、文字由 Chromium 排），--png 用本机 Chrome/Edge
+      // headless 截图。文字拼错/卡数错/对齐歪这类整图渲染问题整类消灭。
+      const pFileA = toWinPath(arg("--prompt-file"));
+      const scA = pFileA ? readCraftSidecar(pFileA) : null;
+      if (!scA) die("用法: pf assemble --prompt-file <p.txt> [--out final.html] [--png final.png] [--map \"槽名=卡号,...\"]",
+        "需要 craft 伴随 JSON（stages + slots + icons）；数据齐了才装配得了。");
+      const { buildTemplateSvg } = await import("../src/template.mjs");
+      const { buildPalette } = await import("../src/figure-catalog.mjs");
+      const pal = buildPalette({ colors: scA.colors || "" });
+      // asset 路径表：slot.value 即路径（craft 已存）；icons 查登记段；
+      // crop 槽位预裁剪（宿主 AI 看图定的真实像素坐标，量高比/内嵌吃裁后文件）
+      const assetPaths = {};
+      for (const s of scA.slots || []) if (s.kind === "asset") assetPaths[s.name] = s.value;
+      const { prepareAssetImage } = await import("../src/assets.mjs");
+      for (const s of scA.slots || []) {
+        if (s.kind === "asset" && s.crop && !s.refOnly) {
+          const p0 = assetPaths[s.name];
+          if (p0) assetPaths[s.name] = await prepareAssetImage(p0, s.crop);
+        }
+      }
+      const { html, placed, geometry, assignMeta, skipped, clashes, emptyCards } = await buildTemplateSvg({
+        stagesStr: scA.stages, slots: scA.slots || [], iconPaths: scA.icons || {},
+        assetPaths, palette: pal, ratio: scA.suggestedRatio || "1:1", map: arg("--map") || "",
+      });
+      const outHtml = path.isAbsolute(toWinPath(arg("--out")) || "") ? toWinPath(arg("--out"))
+        : path.resolve(toWinPath(arg("--out")) || (pFileA ? pFileA.replace(/\.txt$/i, "") + ".html" : "assembled.html"));
+      fs.writeFileSync(outHtml, html, "utf8");
+      console.log(`═══ pf assemble：模板装配（HTML/CSS 排版 + Chromium 光栅化）═══`);
+      console.log(`  📐 网格 ${geometry.rows}×${geometry.cols} · 画布 ${geometry.width}×${geometry.height} · 卡 ${geometry.cardW}×${geometry.cardH} · 边距 ${geometry.margin} 间隙 ${geometry.gap}`);
+      const stageTitles = (scA.stages || "").split("||").map((s) => s.split("|")[0].trim());
+      for (const p of placed) {
+        // 找该图对应的槽位名：crop 预裁剪会改文件名（源名_c...png），按源文件名主干包含匹配
+        const slotHit = (scA.slots || []).find((s) => {
+          const v = s.kind === "icon" ? (scA.icons || {})[s.name] : (assetPaths[s.name] || s.value);
+          if (v === p.src) return true;
+          const stem = path.basename(String(s.value)).replace(/\.\w+$/i, "");
+          return String(p.src).includes(stem);
+        });
+        const am = slotHit ? (assignMeta || {})[slotHit.name] : null;
+        const how = am ? (am.how === "map" ? "显式映射" : am.how === "scene" ? "scene语义归属" : "顺序兜底") : "?";
+        const stage = stageTitles[p.card - 1] || "";
+        console.log(`  ✅ 卡${p.card}「${stage}」${p.kind === "asset" ? "真图" : "icon"} ← ${String(p.src).split(/[\\/]/).pop()}  [${how}]`);
+      }
+      for (const nm of skipped || []) console.log(`  🚫 槽位 "${nm}" 是方法参考图（scene 标了仅参考/never pasted）——不进卡面。要贴就删掉参考措辞重 craft。`);
+      for (const c of clashes || []) console.log(`  ⚠️ ${c}`);
+      // 🔴 省略清单随成图回显（2026-10-15 用户定规「省略必须给理由，拿不准问用户」）：
+      // 用户看装配结果时应该同时看到"原图哪些模块没进图、为什么"——没这段 = 没交代
+      const recon = scA.reconciliation || [];
+      if (recon.length) {
+        console.log(`  📋 省略清单（原文模块未进图）：`);
+        for (const o of recon) console.log(`     · ${o.module}${o.reason ? ` = ${o.reason}` : "（⚠️ 没写理由——必须补理由或问用户）"}`);
+      }
+      // 🔴 成图质量标准验收（2026-10-16 用户定规「要形成一个标准」，细则见 SKILL.md
+      // 「成图质量标准」节）：sidecar 必须带 acceptance 块，装配时逐项回显供宿主对照；
+      // 缺失 = 告警；enhancement 出现白名单外动作（清晰度提升/内容重绘类措辞）= 阻断。
+      const acc = scA.acceptance;
+      if (!acc || !acc.story || !acc.segmentation || !acc.alignment) {
+        console.log(`  ⚠️ 验收块缺失：sidecar 没有 acceptance{story,segmentation,alignment,enhancement}——按 SKILL.md「成图质量标准」补齐后再交付。没有标准 = 又回到凭感觉拼接。`);
+      } else {
+        console.log(`  🎯 验收标准（交付前逐条对照）：`);
+        console.log(`     · 这张图要让读者记住：${acc.story}`);
+        console.log(`     · 分段 = ${acc.segmentation}`);
+        console.log(`     · 对齐 = ${acc.alignment}`);
+        const enh = acc.enhancement || [];
+        if (enh.length) {
+          for (const e of enh) console.log(`     · 增强声明：${e}`);
+          if (enh.some((e) => /超分|去噪|修复|super.?resolution|denoise|restor|sharpen/i.test(String(e)))) {
+            die(`acceptance.enhancement 含白名单外动作（清晰度提升/内容重绘类）——SKILL.md 优化白名单只许显示性增强/结构编辑，先改声明再装配。`);
+          }
+        } else {
+          console.log(`     · 增强声明：无（全部原样引用——确认这是有意选择而不是漏报）`);
+        }
+      }
+      // 🔴 语义审查告警（grid6 教训：结果图塞进方法卡没人拦）。词面无关联≠一定错，但必须宿主
+      // AI 亲眼看图核对——方法卡应放方法过程图，结果卡才放结果图。
+      const reviewNeeded = [];
+      for (const p of placed) {
+        const slotHit = (scA.slots || []).find((s) => {
+          const v = s.kind === "icon" ? (scA.icons || {})[s.name] : (assetPaths[s.name] || s.value);
+          if (v === p.src) return true;
+          return String(p.src).includes(path.basename(String(s.value)).replace(/\.\w+$/i, ""));
+        });
+        const am = slotHit ? (assignMeta || {})[slotHit.name] : null;
+        if (am && (am.how === "order" || am.how === "map")) reviewNeeded.push(`卡${p.card}「${stageTitles[p.card - 1] || ""}」← ${String(p.src).split(/[\\/]/).pop()}（${am.how === "order" ? "scene 里没写归属句子" : "显式指定"}）`);
+        // 🔴 操作位贴原图拦截（2026-10-15 用户定规「操作卡该画示意图而不是结果」）：词面判为
+        // 操作/方法步的卡贴了原图整图（无 crop）——grid6 Denoise 卡被塞结果图的同类错配，
+        // 装配端再拦一道，宿主必须亲眼确认或改道。
+        if (slotHit && slotHit.kind === "asset" && slotHit.role === "operation" && !slotHit.crop && !slotHit.refOnly) {
+          reviewNeeded.push(`卡${p.card}「${stageTitles[p.card - 1] || ""}」是**操作/方法步**，贴的却是原图整图（${String(p.src).split(/[\\/]/).pop()}）——亲眼确认它是方法示意图而非结果图；不符就改 {{icon:名|示意图描述}} 画示意，或加 crop= 只裁方法部分`);
+        }
+      }
+      if (reviewNeeded.length) {
+        console.log(`  ⚠️ 图-卡语义未过词面校验，装配后必须逐卡看图核对（方法卡=方法过程图，结果卡=结果图）：`);
+        for (const r of reviewNeeded) console.log(`     · ${r}`);
+        console.log(`     不符就改 scene 槽位归属句 / --map 重装配——别让无关图混进方法步。`);
+      }
+      const noArt = (scA.stages || "").split("||").length - placed.length - (skipped || []).length;
+      if (noArt > 0) {
+        const names = (emptyCards || []).map((cn) => `卡${cn}「${stageTitles[cn - 1] || ""}」`).join("、");
+        console.log(`  ⚠️ ${noArt} 张卡无视觉素材（占位框已标「待绘制」）：${names}——补 {{asset}} / {{icon}} 槽位或用 render-icon 渲卡内小图；确属待绘制部分，成图后必须重装配替换`);
+      }
+      // 🔴 行内内容量失衡告警（2026-10-15 mod-v2 实锤：0.16 条图 vs 0.85 折线图差 5 倍，
+      // 同排等高注定空位巨大——排版无法消除内容不足，必须在 crop 层面解决）。
+      // 只比真实图（imgAspects 占位卡 = null）：别建议用户给「待绘制」占位框换 crop。
+      {
+        const { rows, cols, imgAspects } = geometry;
+        const ia = imgAspects || [];
+        for (let r = 0; r < rows; r++) {
+          const seg = ia.slice(r * cols, r * cols + cols).map((a, k) => ({ a, k })).filter((x) => x.a != null);
+          if (seg.length < 2) continue;
+          const mx = Math.max(...seg.map((x) => x.a)), mn = Math.min(...seg.map((x) => x.a));
+          if (mx > 0 && mx / mn > 2.2) {
+            const cards = seg.filter((x) => x.a === mx || x.a === mn).map((x) => `卡${r * cols + x.k + 1}(${x.a.toFixed(2)})`);
+            console.log(`  ⚠️ 第 ${r + 1} 行图宽高比失衡 ${cards.join(" vs ")}（差 ${(mx / mn).toFixed(1)} 倍）——同排等高排版本行内容满格是学术排版底线。解决：换 crop= 范围让各卡图形状接近；宽条图用 pf montage 重排成网格（自动找白隙）；或一卡多图并排。空位是内容问题不是排版问题，重装配前必须处理。`);
+          }
+        }
+      }
+      // PNG 光栅化：本机 Chromium 内核浏览器 headless 截图（零依赖，不引 puppeteer）。
+      // 🔴 必须异步 spawn——本机 spawnSync 对 chrome/msedge 稳定 EBUSY（python.exe 同），async spawn 正常
+      const pngOutRaw = toWinPath(arg("--png"));
+      const pngOut = pngOutRaw ? (path.isAbsolute(pngOutRaw) ? pngOutRaw : path.resolve(pngOutRaw)) : null;
+      if (pngOut) {
+        const { spawn } = await import("node:child_process");
+        const candidates = [
+          process.env.CHROME_PATH,
+          "C:/Program Files/Google/Chrome/Application/chrome.exe",
+          "C:/Program Files (x86)/Google/Chrome/Application/chrome.exe",
+          "C:/Program Files/Microsoft/Edge/Application/msedge.exe",
+          "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
+        ].filter(Boolean);
+        const browser = candidates.find((p) => fs.existsSync(p));
+        if (!browser) die("本机找不到 Chrome/Edge（PNG 光栅化需要）", "装 Chrome/Edge，或用 CHROME_PATH 环境变量指定浏览器路径；HTML 已生成可直接打开。");
+        // 🔴 截图先落临时名再校验 mtime：目标 PNG 可能被预览器锁住（OneDrive），Chrome 静默
+        // 不写盘 exit 0——存在性校验会被旧文件骗过（2026-10-14 实锤），必须比 HTML 新才算成功。
+        const shotTmp = pngOut.replace(/\.png$/i, "") + ".shot-" + Date.now() + ".png";
+        const udd = path.join(os.tmpdir(), "pf-chrome-profile-" + Date.now());
+        const exitCode = await new Promise((resolve, reject) => {
+          const child = spawn(browser, [
+            "--headless", "--disable-gpu", "--hide-scrollbars", "--default-background-color=FFFFFFFF",
+            "--user-data-dir=" + udd,
+            `--window-size=${geometry.width},${geometry.height}`, `--screenshot=${shotTmp}`,
+            "file:///" + outHtml.replace(/\\/g, "/"),
+          ], { stdio: ["ignore", "ignore", "pipe"] });
+          let errTail = "";
+          child.stderr.on("data", (d) => { errTail = (errTail + d).slice(-400); });
+          const t = setTimeout(() => { child.kill(); reject(new Error("Chromium 截图超时 60s")); }, 60000);
+          child.on("error", (e) => { clearTimeout(t); reject(e); });
+          child.on("exit", (code) => { clearTimeout(t); resolve({ code, errTail }); });
+        }).then((r) => r).catch((e) => die(`Chromium 截图失败：${e.message}`, "HTML 已生成可直接浏览器打开核对；或检查 CHROME_PATH。"));
+        const htmlMtime = fs.statSync(outHtml).mtimeMs;
+        if (!fs.existsSync(shotTmp)) die(`Chromium exit ${exitCode.code} 但没写截图`, (exitCode.errTail || "无 stderr").slice(-300) + "；重试或直接打开 HTML 核对排版。");
+        if (fs.statSync(shotTmp).mtimeMs < htmlMtime) die("Chromium 截图比 HTML 旧——写盘被静默跳过", "关掉可能锁目标的预览器后重试。");
+        fs.copyFileSync(shotTmp, pngOut);
+        fs.rmSync(shotTmp, { force: true });
+        console.log(`  🖼 PNG（Chromium 光栅化）→ ${pngOut}`);
+      }
+      console.log(`✅ 模板 HTML（可编辑，元素带 id）→ ${outHtml}`);
+      try {
+        appendEvent(path.basename(resolveDoc(arg("--doc"))), "figure.assembled", {
+          cards: (scA.stages || "").split("||").length, placed: placed.length, ts: new Date().toISOString(),
+        });
+        // 🔴 assemble 成图也按版本落库（用户定规「不同版本优化后的图片要记录存储」）：
+        // 同一 figure 反复重排版时，derived/ 里 v1/v2/v3… 全程可回溯
+        if (pngOut && fs.existsSync(pngOut)) {
+          const regA = registerDerived(path.basename(resolveDoc(arg("--doc"))), {
+            slot: "assemble_" + (scA.at || "fig").replace(/[^\w-]/g, "_"),
+            file: pngOut, op: "assemble", source: craftSidecarPath(pFileA),
+            params: { cards: (scA.stages || "").split("||").length, placed: placed.length },
+          });
+          console.log(`🗄 成图已落库：${regA.regPath}（assemble v${regA.version}）`);
+        }
+      } catch { /* 记账失败不阻塞 */ }
+      return;
+    }
+
+    case "montage": {
+      // 🔴 宽条图重排成网格（2026-10-15 用户定规「什么效果好用什么，只有实测效果好才行」）：
+      // assemble 的行内宽高比失衡告警给出三个出口（换 crop / 拆子图网格 / 一卡多图），
+      // 其中「条图重排网格」原本是宿主手工 sharp——收编成命令，自动找白隙、自动选列数。
+      // 实测教训：目测均分裁切必带黑边（子图间隔不均匀），列亮度扫描才裁得准。
+      const inP = toWinPath(arg("--in"));
+      const outP = toWinPath(arg("--out"));
+      if (!inP || !outP) die("用法: pf montage --in <条图|整页图> --out <网格.png> [--crop 左,上,宽,高] [--cols N | --rows N] [--target 0.7] [--segments \"左,右;左,右\"] [--doc <docId> --slot <槽名>]",
+        "输入可以是整页 PDF 光栅图（配 --crop 取出条图），也可以是已裁好的条图。列数缺省自动选（网格宽高比最接近 --target，默认 0.7≈典型卡图）。--doc 落库：产物复制进项目 figures/derived/ 按版本存档（可审计）。");
+      if (!fs.existsSync(inP)) die(`输入图不存在：${inP}`);
+      try {
+        const r = await montageStrip({
+          src: inP, out: outP,
+          crop: arg("--crop"),
+          cols: arg("--cols") ? parseInt(arg("--cols"), 10) : undefined,
+          rows: arg("--rows") ? parseInt(arg("--rows"), 10) : undefined,
+          target: arg("--target") ? parseFloat(arg("--target")) : 0.7,
+          segments: arg("--segments"),
+        });
+        console.log(`✅ 网格重排完成：${r.n} 个子图 → ${r.rows}×${r.cols}，输出 ${r.width}×${r.height}（宽高比 ${r.aspect.toFixed(2)}）`);
+        console.log(`   子图边界: ${r.bounds.map(([l, rr]) => `${l}-${rr}`).join(" / ")} → ${outP}`);
+        // 派生图版本落库（--doc 给了才记；用户可审计每版优化的源图+参数）
+        if (arg("--doc")) {
+          try {
+            const docIdM = path.basename(resolveDoc(arg("--doc")));
+            const reg = registerDerived(docIdM, {
+              slot: arg("--slot") || path.basename(outP).replace(/\.png$/i, ""),
+              file: outP, op: "montage", source: inP,
+              params: { crop: arg("--crop") || null, cols: arg("--cols") || "auto", rows: arg("--rows") || "auto", target: arg("--target") || 0.7, segments: arg("--segments") || null },
+            });
+            console.log(`🗄 已落库：${reg.regPath}（v${reg.version}，事件 asset.derived，derived/index.json 可查）`);
+          } catch (e) { console.error(`⚠️ 落库失败（不阻塞产物）：${e?.message || e}`); }
+        }
+      } catch (e) {
+        die(`montage 失败：${e?.message || e}`, "常见原因：--crop 越界（先 pf inspect 或 Read 原图确认尺寸）；阈值不合适加 --threshold 240 重试。");
+      }
+      return;
+    }
+
+    case "compare": {
+      // 🔴 原图 vs 产出对比（2026-10-15 用户定规「原图美化美化了什么，要给用户看的对比」）：
+      // 交付优化结果（montage 重排/assemble 排版/精修）时必须附对照图——用户一眼判断
+      // 动了什么、没动什么。
+      // 🔴 2026-10-15 二轮定规「这只是展示结果示意图，为什么没有对应的示意」——光把结果
+      // 并排不算对比，用户核对不了操作链。对比图必须是「操作示意」三件套：
+      //   --box   在面板上画红框标取材区（panel:x,y,w,h[:标签]，原图像素坐标自动缩放）
+      //   --steps 每面板一句操作说明（分号分隔，一一对应；编号徽章自动加）
+      //   --flow  面板间流程箭头
+      const before = toWinPath(arg("--before"));
+      const after = toWinPath(arg("--after"));
+      const mids = [];
+      { let i = 0; while ((i = process.argv.indexOf("--mid", i)) > -1) { const v = process.argv[i + 1]; if (v) mids.push(toWinPath(v)); i += 1; } }
+      const outC = toWinPath(arg("--out"));
+      const styleArg = arg("--style") || "pipeline";
+      if (!["pipeline", "comparison"].includes(styleArg)) die(`--style 只认 pipeline（方法图式操作链，直线箭头）或 comparison（Cell 式结果对比，行=对比对象、列按同一身份对齐）`,
+        "体裁二选一（2026-10-16 用户定规：结果对比还是方法图必须想清楚，一张图只能是一种）：比「同一内容不同来源/条件」用 comparison --row；讲「操作顺序」才用 pipeline。");
+      // 🔴 comparison 体裁：--row "行标签:图1,图2,..."（可多次），列 = 同一身份对齐；
+      // --highlight 行序号（从 1 数）加粗行标 + 浅色底带。无箭头无红框。
+      if (styleArg === "comparison") {
+        const rowArgs = [];
+        { let i = 0; while ((i = process.argv.indexOf("--row", i)) > -1) { const v = process.argv[i + 1]; if (v) rowArgs.push(v); i += 1; } }
+        if (rowArgs.length < 2 || !outC) die("用法: pf compare --style comparison --row \"Paper:图1,图2,...\" --row \"promptFigure:图1,图2,...\" --out <对比.png> [--highlight 2]",
+          "列必须按同一身份对齐（每列上下是同一张子图，只是来源/条件不同）——对齐靠像素匹配或已知置换，别拿不相干的图凑列。");
+        const rows = rowArgs.map((ent, ri) => {
+          const ci = ent.search(/[:：]/);
+          if (ci < 0) die(`--row 第 ${ri + 1} 条缺行标签（格式 标签:图1,图2,...）：${ent.slice(0, 60)}`);
+          const label = ent.slice(0, ci).trim();
+          const imgs = ent.slice(ci + 1).split(/[,，]/).map((s) => toWinPath(s.trim())).filter(Boolean);
+          if (!label || !imgs.length) die(`--row 第 ${ri + 1} 条解析失败：标签和图都要有`);
+          for (const p of imgs) if (!fs.existsSync(p)) die(`对比输入不存在：${p}`);
+          return { label, imgs };
+        });
+        const hiRaw = parseInt(arg("--highlight") || "2", 10);
+        const highlight = (Number.isFinite(hiRaw) ? hiRaw : 2) - 1;
+        if (highlight < 0 || highlight >= rows.length) die(`--highlight ${hiRaw} 超出范围（1~${rows.length}）`);
+        try {
+          const r = await compareRows({ rows, highlight, out: outC });
+          console.log(`✅ 对比图（${r.rows} 行 × ${r.cols} 列，${r.width}×${r.height}）→ ${outC}`);
+          console.log("   自检：每列上下真是同一内容吗（逐列验）？行标说清对比对象了吗？对比图里不放箭头/红框/流程叙事。");
+          if (arg("--doc") && arg("--slot")) {
+            const dId = path.basename(resolveDoc(arg("--doc")));
+            const rec = registerDerived(dId, {
+              slot: arg("--slot"), file: outC, op: "compare-comparison", source: path.basename(rows[0].imgs[0] || ""),
+              params: { highlight: highlight + 1, rows: rows.map((rw) => ({ label: rw.label, imgs: rw.imgs.map((p) => path.basename(p)) })) },
+            });
+            console.log(`   已落库 derived/${arg("--slot")}_v${rec.version}.png + asset.derived 事件。`);
+          }
+        } catch (e) {
+          die(`compare 失败：${e?.message || e}`, "检查输入图是否可读。");
+        }
+        return;
+      }
+      if (!before || !after || !outC) die("用法: pf compare --before <原图> --after <成图> --out <对比.png> [--mid <中间产物>（可多次）] [--labels \"…\"] [--steps \"…\"] [--box \"面板:x,y,w,h[:标签]\"] [--flow] [--layout auto|strip] [--maxw 4800] ｜ 对比体裁: --style comparison --row \"标签:图,...\"（可多次）",
+        "对比是宿主 AI 的自检工具：交付优化结果前跑这条、看输出、--doc 落库。图面默认无标题解释（只有 (a)(b) 角标+红框+箭头），溯源与过程参数全走落库。");
+      for (const p of [before, after, ...mids]) {
+        if (!fs.existsSync(p)) die(`对比输入不存在：${p}`);
+      }
+      const imgs = [before, ...mids, after];
+      // 🔴 2026-10-15 六轮定规「图为什么要有那种标题解释」：图就是图，默认不画任何标题/说明——
+      // 解释由宿主 AI 交付时说、由数据库记。--labels/--steps 是可选项（给了才上图，数量必须对齐）。
+      const labelsArg = arg("--labels");
+      let labels;
+      if (labelsArg) {
+        labels = labelsArg.split(/[;；]/).map((s) => s.trim()).filter(Boolean);
+        if (labels.length !== imgs.length) die(`--labels 数量（${labels.length}）和图数（${imgs.length}）不一致——用分号分隔，一一对应`);
+      }
+      const stepsArg = arg("--steps");
+      let steps;
+      if (stepsArg) {
+        steps = stepsArg.split(/[;；]/).map((s) => s.trim()).filter(Boolean);
+        if (steps.length !== imgs.length) die(`--steps 数量（${steps.length}）和面板数（${imgs.length}）不一致——每个面板一句「这一步做了什么」，用分号分隔`);
+      }
+      const boxArg = arg("--box");
+      let boxes;
+      if (boxArg) {
+        boxes = [];
+        for (const ent of boxArg.split(/[;；]/)) {
+          const s = ent.trim(); if (!s) continue;
+          let panel = 0, rest = s;
+          const pm = s.match(/^(\d+)\s*[:：]/);
+          if (pm) { panel = parseInt(pm[1], 10); rest = s.slice(pm[0].length); }
+          const m = rest.match(/^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)(?:[:：](.*))?$/);
+          if (!m) die(`--box 条目无法解析：「${ent}」——格式 面板序号:x,y,w,h[:红框标签]（如 0:0,2570,5366,850:Ours 行），分号分隔多个`);
+          if (panel >= imgs.length) die(`--box 面板序号 ${panel} 超出范围（只有 ${imgs.length} 个面板，从 0 数起）`);
+          if (!boxes[panel]) boxes[panel] = [];
+          boxes[panel].push({ x: +m[1], y: +m[2], w: +m[3], h: +m[4], label: (m[5] || "").trim() });
+        }
+      }
+      try {
+        const layoutArg = arg("--layout") || "auto";
+        if (!["auto", "strip"].includes(layoutArg)) die(`--layout 只认 auto（超宽自动折行成网格）或 strip（强制单行）`);
+        const maxTotalW = parseInt(arg("--maxw") || "4800", 10) || 4800;
+        const r = await comparePanels({ imgs, labels, steps, boxes, flow: has("--flow"), out: outC, layout: layoutArg, maxTotalW });
+        console.log(`✅ 对比图（${r.panels} 张面板${r.rows > 1 ? `、自动折成 ${r.rows} 行` : ""}，${r.width}×${r.height}）→ ${outC}`);
+        console.log("   自检工作流：① 红框标对位置了吗（亲眼验）？② derived/index.json 里记录齐了吗（labels/steps/boxes/inputs）？③ 交付时解释由你（宿主 AI）说，不烙在图上。");
+        // 🔴 2026-10-15 用户定规「你数据库要写，为什么放在图里面」：过程元数据（crop 坐标、
+        // 红框几何、步骤原文、layout 参数）全量进 derived 落库，图面只留语义。给 --doc+--slot 即记。
+        if (arg("--doc") && arg("--slot")) {
+          const dId = path.basename(resolveDoc(arg("--doc")));
+          const rec = registerDerived(dId, {
+            slot: arg("--slot"), file: outC, op: "compare", source: path.basename(before),
+            params: { labels, steps, boxes, flow: has("--flow"), layout: layoutArg, maxTotalW, inputs: imgs.map((p) => path.basename(p)) },
+          });
+          console.log(`   已落库 derived/${arg("--slot")}_v${rec.version}.png + asset.derived 事件（标注/参数全量可审计）。`);
+        }
+      } catch (e) {
+        die(`compare 失败：${e?.message || e}`, "检查输入图是否可读（PDF 不行，先用 pf montage --crop 光栅产物）。");
+      }
+      return;
+    }
+
+    case "compose": {
+      // 🔴 资产合成（2026-10-14 槽位链路 P0）：渲后把 scene 槽位声明的真图/图标贴进
+      // 渲染图里的纯品红占位块。数据源 = craft 伴随 JSON 的 slots（asset=原文例图，
+      // icon=单独渲的小图标）。贴入即记账（asset.placed），宿主 AI 从回显知道全部状态。
+      const pngIn = toWinPath(arg("--png"));
+      if (!pngIn || !fs.existsSync(pngIn)) {
+        die('用法: pf compose --prompt-file <p.txt> --png <渲染图.png> [--out <合成图.png>]',
+          "槽位在 craft --scene 里用 {{asset:名|图片路径}} 声明（craft 回显会列出清单）；渲染图里对应位置应是纯品红 (#FF00FF) 色块。");
+      }
+      const pFile = toWinPath(arg("--prompt-file"));
+      const scCompose = pFile ? readCraftSidecar(pFile) : null;
+      const slots = scCompose?.slots || [];
+      if (!slots.length) {
+        die("伴随 JSON 里没有槽位记录——craft --scene 里的 {{asset:名|路径}} 标记没被解析（语法：双花括号 + 竖线分隔，例 {{asset:face|C:/pics/example.png}}）",
+          "无槽位就不需要 compose——没有要贴的真图时别加槽位标记。");
+      }
+      const outPng = toWinPath(arg("--out")) || pngIn.replace(/\.png$/i, ".composed.png");
+      const { composeSlots } = await import("../src/assets.mjs");
+      // 🔴 icon 槽位素材查表：render-icon 渲好的小图登记在伴随 JSON icons 段
+      const report = await composeSlots(pngIn, slots, outPng, { iconPaths: scCompose.icons || {} });
+      console.log(`═══ pf compose：scene 声明 ${slots.length} 槽位 ═══`);
+      if (report.aligned) console.log(`  📐 行带对齐：${report.aligned} 个槽位几何向行内中位数收敛（top/height/width 对齐后再贴）`);
+      for (const p of report.placed) console.log(`  ✅ "${p.name}" [${p.source}] ← ${p.path}  @ (${p.left},${p.top}) ${p.width}×${p.height}`);
+      for (const m of report.missing) console.log(`  ⚠️ ${m}`);
+      // 🔴 来源分布（用户 2026-10-14 定规「不是原图的要在数据库标记」）：
+      // original=原文原图直贴 / reproduced=源码复现图 / drawn=AI 画——成图里哪些元素是原图
+      // 哪些是画的必须可查，宿主 AI 读伴随 JSON 的 compose 段即知，不用翻事件流。
+      const srcCount = {};
+      for (const p of report.placed) srcCount[p.source] = (srcCount[p.source] || 0) + 1;
+      if (report.placed.length) {
+        console.log(`来源标记：` + Object.entries(srcCount).map(([k, v]) => `${k}×${v}`).join(" · "));
+        console.log(`✅ 合成图已写入 ${outPng}（原渲染图不动）`);
+      }
+      try {
+        // 记账三落点：① 事件流（回放审计）② 伴随 JSON compose 段（宿主 AI 主查询口）
+        // ③ 渲染留证门（provenance 链：这张图的卡内元素哪些是真图哪些是画的）
+        appendEvent(path.basename(resolveDoc(arg("--doc"))), "asset.placed", {
+          slots: slots.length, placed: report.placed.length,
+          sources: srcCount,
+          names: report.placed.map((p) => `${p.name}:${p.source}`), ts: new Date().toISOString(),
+        });
+      } catch { /* 记账失败不阻塞合成 */ }
+      if (pFile && scCompose && fs.existsSync(path.resolve(craftSidecarPath(pFile)))) {
+        try {
+          const scPath2 = path.resolve(craftSidecarPath(pFile));
+          const sc2 = JSON.parse(fs.readFileSync(scPath2, "utf8"));
+          sc2.compose = {
+            at: new Date().toISOString(),
+            png: outPng,
+            slots: slots.map((s) => ({ name: s.name, kind: s.kind, source: s.source, value: s.value, role: s.role })),
+            placed: report.placed,
+            missing: report.missing,
+            sources: srcCount,
+          };
+          fs.writeFileSync(scPath2, JSON.stringify(sc2, null, 2), "utf8");
+          console.log(`📒 来源标记已写入 ${path.basename(scPath2)} 的 compose 段（original/reproduced/drawn 分类可查）`);
+        } catch (e) { console.error(`⚠️ 伴随 JSON 写回失败（${e.message}）——事件流仍有记录`); }
+      }
+      return;
+    }
+
     case "doc": {
       // 弱模型实测修复：原 `arg("--doc") || rest[1]` 会把 `pf doc context --at "§3.2"` 的
       // "--at" 当成 docId（报"找不到项目 --at"）。文档定位只认 --doc，缺省回退最近项目。
@@ -614,7 +1248,11 @@ async function main() {
       if (rest[0] === "context") {
         const out = await callDaemon("doc.context", { at }, docId);
         console.log(`# §${out.section} 上下文（${out.chars} 字）\n`);
-        out.paragraphs.forEach((t, i) => console.log(`¶${i + 1} ${t}\n`));
+        (out.blocks || []).forEach((b) => {
+          const tag = b.type === "caption" ? "（图注，占 ¶ 号）" : "";
+          console.log(`¶${b.para}${tag} ${b.text}
+`);
+        });
         return;
       }
       if (rest[0] === "search") {
@@ -787,15 +1425,35 @@ async function main() {
       // 🔴 渲染端能力前置检查（V13 实测：standard 只有 1024x1024 方图档）——
       // standard + 横/竖版比例 = 必然 ratio_mismatch 白烧一次额度，出图前就拦下提醒
       const model = arg("--model") || "standard";
+      // 🔴 复刻参考图（2026-10-13）：--ref prev | <png路径> —— 参考图以 img2img 条件进出图模型，
+      // 布局/母题被参考图锁住，提示词只写"要改什么"；--replica 交服务端视觉轮读图出规格重写提示词。
+      const refArg = arg("--ref");
+      const replica = has("--replica");
+      // 🔴 用户原图分档覆盖（2026-10-14 参考链路）：宿主 AI 按四项 rubric 给参考图分 A/B/C
+      // （A=可临摹 / B=只定拓扑内容 / C=仅意图证据），用户坚持按自己的图画时用本 flag 一票覆盖。
+      const refQuality = arg("--ref-quality");
+      if (refQuality && !/^[abc]$/i.test(refQuality)) {
+        die(`--ref-quality 只接受 a|b|c（A=可临摹 B=只定拓扑 C=仅意图证据），收到 "${refQuality}"`);
+      }
+      if (replica && !refArg) die("--replica 需要配合 --ref <png路径>（一键临摹必须有参考图，服务端会 400 拒绝）", "pf render --at ... --ref prev --replica  或  --ref <草图.png> --replica");
+      let refParam = null;
+      if (refArg) {
+        if (refArg === "prev") refParam = "prev";
+        else {
+          const rp = toWinPath(refArg);
+          if (!fs.existsSync(path.resolve(rp))) die(`--ref 参考图不存在：${rp}`, "传 --ref prev 复刻上一版，或给一个真实存在的 PNG 路径（论文原图路径见 pf doc figures）");
+          refParam = path.resolve(rp);
+        }
+      }
       const rr = ratio && parseRatio(ratio);
       if (model === "standard" && rr && Math.abs(rr.w / rr.h - 1) > 0.15) {
-        console.error(`⚠️ standard 渲染端只出方图（1024x1024），给不了 ${ratio} —— 实测必报画布比不符（V13 白烧一次额度）。出路：① 改 --ratio 1:1 走 standard；② 宽幅/竖版必须走 premium，完整链路 = standard 方图草稿 → pf qa 核验 --pass → pf review resolve --approve（或 GUI 点通过）→ render --model premium（premium 门禁会查审批，修正迭代轮才可用 --force "理由" 豁免）。`);
+        console.error(`⚠️ standard 渲染端只出方图（1024x1024），给不了 ${ratio} —— 实测必报画布比不符（V13 白烧一次额度）。出路：① 改 --ratio 1:1 走 standard；② 宽幅/竖版可走 premium（链路同上），但 **premium 端也会把宽幅裁回方图**（实测 5:3 被降级 1:1 后裁剩 49.9%）——真要宽幅只能出图后自己拼接/裁副，或接受 1:1；完整链路 = standard 方图草稿 → pf qa 核验 --pass → pf review resolve --approve（或 GUI 点通过）→ render --model premium（premium 门禁会查审批，修正迭代轮才可用 --force "理由" 豁免）。`);
       }
-      // 🔴 渲染端字节预算（v18 事故实测：8205 字节被 prompt_too_long 拒绝）——花钱之前先拦
+      // 🔴 渲染端字节预算（32000，2026-10-13 从 8000 放开——v18 时代 8205 被拒的事故已不适用）——花钱之前先拦
       const promptBytes = Buffer.byteLength(String(prompt).trim(), "utf8");
       if (has("--force")) requireForceReason("render 门禁豁免"); // premium 门禁/字节预算的豁免都要留理由
-      if (promptBytes > 8000 && !has("--force")) {
-        die(`提示词 ${promptBytes} 字节超渲染端预算（≈8000）——直接渲染会被 prompt_too_long 拒绝白烧额度。回 craft 精简：已验证遵守的 fix 沉淀进 --stages 并从 --fixes 删除，或砍次要要点`,
+      if (promptBytes > 32000 && !has("--force")) {
+        die(`提示词 ${promptBytes} 字节超渲染端预算（32000，对齐 premium 上游原生上限）——直接渲染会被 prompt_too_long 拒绝白烧额度。回 craft 精简：已验证遵守的 fix 沉淀进 --stages 并从 --fixes 删除，或砍次要要点`,
           `pf refine <figureId> 看活跃修正（--settle 沉淀）后重拼 craft`);
       }
       // 🔴 排练模式（2026-09-21）：--dry-run 走完所有前置检查但不调 daemon、不花钱、不写图库。
@@ -843,6 +1501,9 @@ async function main() {
       } catch { /* 无项目上下文时跳过（daemon 调用会自行报错） */ }
       const out = await callDaemon("render", {
         prompt, model,
+        // 🔴 promptFile 原样下发（2026-09-27）：门禁拒绝信息要给出可复制的完整命令，
+        // 而从 sidecar 反推文件名会丢扩展名（p.txt → p.craft.json，替换式生成）
+        promptFile: promptFile || null,
         at: arg("--at") || die('--at 必填，如 "§3.2 ¶2" —— 插件不猜位置'),
         side: arg("--side") || "after",
         ratio,
@@ -851,6 +1512,10 @@ async function main() {
         forceReason: forceReason(),
         // sidecar 路径落盘进版本（pf refine 重拼下一轮命令的依据）
         sidecar: promptFile ? path.resolve(craftSidecarPath(promptFile)) : null,
+        // 🔴 复刻参考图（2026-10-13）："prev" 或 PNG 绝对路径；replica=true 走服务端一键临摹
+        ref: refParam,
+        refQuality: refQuality ? refQuality.toLowerCase() : null,
+        replica,
       }, arg("--doc"));
       console.log(`✅ 图 ${out.figureId} v${out.version}（${out.model} / 计费通道 ${out.channel}）已入库`);
       if (out.pixels) console.log(`   画布: ${out.ratio || "默认"} → 实测 ${out.pixels}${out.ratioIssue ? "  ⚠️ 与请求比不符" : ""}`);
@@ -970,8 +1635,8 @@ async function main() {
             scLines2.forEach((l) => console.log(l));
             console.log(`  任何阶段盒子缺失/标题不符/[画法]元素没画 = 布局漂移，Q9 FAIL（缺陷写具体到阶段）。`);
           }
-          console.log(`—— 第 3 步：逐条核验（每条给 PASS/FAIL + 你在图里看到的证据）——`);
-          QA_CHECKLIST.forEach((c) => console.log("  " + c));
+          console.log(`—— 第 3 步：逐条核验（按三个镜头过；每条给 PASS/FAIL + 你在图里看到的证据）——`);
+          printQaChecklist(QA_CHECKLIST);
           console.log(`—— 第 3.5 步：从严纪律（AI 审放水 = 白审，V11 事故教训）——`);
           console.log(`  ① 核验 Q2 前必须先输出「图上全部可见文字清单」（逐条列出，一张不漏），再逐条对照白名单——不许凭印象说"标签都对"；`);
           console.log(`  ② PASS 必须带可复查的量化证据（数出来的元素个数、留白大约占比、色相个数），只写"看起来没问题"= 无效核验；`);
@@ -1034,6 +1699,24 @@ async function main() {
         console.log(`  实体: ${t.example.entities}`);
         if (t.example.structure) console.log(`  结构: ${t.example.structure}`);
         console.log(`  命令: ${t.example.cmd}`);
+        // 🔴 成品叙述范文（2026-10-13 组词重构，对标 PaperBanana 的参考示例 ICL）：
+        // 用示例的 stages 实时渲染出 craft 会生成的场景叙述段——宿主 AI 照这个
+        // "画面感"水准写自己的 stages（每个元素：形状/颜色/内嵌小图/连接，具体到可画）。
+        if (t.example.stages || /--stages "/.test(t.example.cmd || "")) {
+          try {
+            const { buildStageSceneNarrative } = await import("../src/craft.mjs");
+            const { STAGE_COLOR_CYCLE } = await import("../src/figure-catalog.mjs");
+            const stagesSrc = t.example.stages || (t.example.cmd.match(/--stages "([^"]+)"/) || [])[1] || "";
+            const stages = stagesSrc.split(/\s*\|\|\s*/).map((chunk) => {
+              const [title, rest2] = chunk.split(/\s*\|\s*/);
+              return { title: title.trim(), bullets: (rest2 || "").split(/\s*;\s*/).filter(Boolean) };
+            });
+            if (stages.length >= 2) {
+              const scene = buildStageSceneNarrative({ stages, palette: { cycle: STAGE_COLOR_CYCLE }, figureType: t.id });
+              if (scene?.text) console.log(`  成品叙述范文（craft 会把你的 stages 拼成这个画面段）:\n    ${scene.text}`);
+            }
+          } catch { /* 范文只是辅助展示，失败不阻断 types show */ }
+        }
         return;
       }
       console.log("图型目录（craft --figure-type 用；详情 pf types show <id>）：\n");
@@ -1084,6 +1767,90 @@ async function main() {
         }
       } catch { /* 无项目上下文时跳过该门（--at 校验与溯源门会另行拦截） */ }
       const entities = (arg("--entities") || "").split(/[,，]/).map((s) => s.trim()).filter(Boolean);
+
+      // 🔴 思考外置·出题模式（2026-10-14，用户定调"从拼接提示词变成调用用户 AI 思考"）：
+      // 不拼提示词，输出"思考任务包"——宿主 AI 看图思考后写 scene 段，再 craft --scene 阅卷。
+      // 插件的定位从组词者变成出题人 + 阅卷人：喂什么材料（原文/真图/约束）是插件的活，
+      // 画什么怎么画（画面语义）是宿主 AI 的活——图模型天生懂学术惯例，不需要词典教。
+      if (has("--brief")) {
+        console.log("═══ pf craft --brief：scene 思考任务包 ═══");
+        console.log("\n【任务】为下面的图写一段自然语言 scene 画面描述（英文，250-450 词），宿主 AI 直接产出文本，随后用 craft --scene 直通。");
+        console.log("\n【写法规范】");
+        console.log("• 每张卡一句话：先说卡标题，再说卡内画什么（可数部件+数量+相对位置），最后说小标签");
+        console.log('• 图标必须「可数解剖」：如 "three stacked slabs in slight perspective, each showing a faint grid"、"five circles, two pairs joined by bold lines"——不可数的模糊名词会画出渐变方块');
+        console.log("• 画法参考下面的顶会真图（你是多模态的，打开图片看），只学画法不搬内容");
+        console.log("• 内容必须来自原文摘录与实体清单，禁止编造；要印的文字全部用双引号括起");
+        console.log("• 布局：卡片等宽等高同一水平轴，箭头高中线连接，文字只出现在卡内");
+        console.log("\n【原文摘录】(--at 溯源锚点: " + (arg("--at") || "未给，强烈建议补 --at") + ")");
+        try {
+          const bDoc = path.basename(resolveDoc(arg("--doc")));
+          const bMeta = readMeta(bDoc);
+          const bAt = arg("--at");
+          if (bAt) {
+            const b2 = resolveRef(bMeta.blocks || [], bAt);
+            const srcText = String(b2.text || "").slice(0, 1600);
+            console.log(srcText + (String(b2.text || "").length > 1600 ? "…" : ""));
+          } else {
+            console.log("（未给 --at：无原文摘录。画面内容将只依赖实体清单——实体必须全部来自此前 distill）");
+          }
+        } catch (e) {
+          console.log("（原文不可用：" + e.message + "）");
+        }
+        console.log("\n【意图】" + (arg("--intent") || "(未给)"));
+        // 🔴 原文例图清单（2026-10-14 资产槽位链路）：原文 \includegraphics 捕获的真实图——
+        // 视觉识别例子图/数据集样例/结果可视化等。宿主 AI 亲眼看并判定用途：
+        // 该贴原图的位置用 {{asset:名|绝对路径}}（缺省标 original）槽位声明（渲后 pf compose 贴入），
+        // 别让模型画假图。2026-10-14 用户定规：原图缺失时宿主 AI 自己去找（PDF 抽图/源码复现），
+        // 复现图用 |repro 标记——不是原图的必须在账本里标清来源。
+        try {
+          const aDoc = path.basename(resolveDoc(arg("--doc")));
+          const aMeta = readMeta(aDoc);
+          const imgBlocks = (aMeta.blocks || []).filter((b) => b.images && b.images.length);
+          if (imgBlocks.length) {
+            console.log("\n【原文已有图——逐张判定用途，别急着当参考】");
+            console.log("• 例图/数据集样例/结果可视化/输入输出实例 → 这类图是数据本身，卡面必须贴原图：scene 写 {{asset:名|绝对路径}}（缺省标 original），禁止让图模型重画——重画 = 造假数据");
+            console.log("• 文件不存在的（编译产物丢了/仓库只有 \\includegraphics 引用）→ 你（宿主 AI）去找：① 从原文 PDF 对应 Figure 抽图；② 论文有开源代码就跑出原图。找到后槽位标 |repro：{{asset:名|路径|repro}}；找不到就明确告知用户，别用画的糊弄");
+            console.log("• 方法图/流程图/其他论文画法图 → 不贴，当画法参考（对照下面的顶会参考图学怎么画）");
+            const base = String(aMeta.source || "").replace(/[\\/][^\\/]+$/, "");
+            imgBlocks.forEach((b, i) => {
+              const p = String(b.images[0]).replace(/^\.\.[\\/]/, "");
+              // includegraphics 相对目录不统一（相对 sec/ 或主文件）——多候选探测，存在的优先
+              const candidates = [path.resolve(base, p), path.resolve(base, "..", p), path.resolve(base, "sec", p)];
+              const abs = candidates.find((c) => fs.existsSync(c)) || candidates[1];
+              console.log(`${i + 1}. ${abs}${fs.existsSync(abs) ? "" : "  ⚠️ 文件不存在——按上面第二条去找（PDF 抽图或源码复现，找到标 |repro）"}`);
+              if (b.text) console.log(`   图注: ${String(b.text).replace(/\s+/g, " ").slice(0, 120)}`);
+            });
+          }
+        } catch { /* 例图清单是增强项，拿不到不阻塞出题 */ }
+        console.log("【实体清单】" + (entities.join(", ") || "(未给)"));
+        console.log("【阶段骨架】" + (arg("--stages") || "(未给——骨架只定结构，画面细节写在 scene 里)"));
+        console.log("【图型】" + (arg("--figure-type") || "flowchart") + " · 【画布比】" + (arg("--ratio") || "按预设缺省"));
+        // refs 自动检索：实体名+意图作查询包（宿主也可自己跑 pf refs 换查询包）
+        try {
+          const refsDirB = path.join(os.homedir(), ".promptfigure", "references");
+          const idxB = loadRefsIndex(refsDirB);
+          if (idxB && idxB.docs.length) {
+            const qs = [arg("--intent") || "", ...entities].filter(Boolean).slice(0, 6);
+            const { results: refHits } = idxB.search(qs, { k: 3 });
+            console.log("\n【顶会参考图】（打开看，提炼画法）");
+            if (refHits.length) {
+              refHits.forEach((r, i) => {
+                console.log(`${i + 1}. ${r.fig.imageAbs}`);
+                console.log(`   图注: ${r.fig.caption.slice(0, 180)}${r.fig.caption.length > 180 ? "…" : ""}`);
+              });
+            } else {
+              console.log("零命中——按写法规范自推（数据类型→学术原语），不要发明具象图标");
+            }
+          }
+        } catch { /* 参考库缺失不阻塞出题 */ }
+        console.log("\n【硬约束】(craft 阅卷时强制)");
+        console.log("• 可印文字白名单 = 实体清单 + 阶段标题 + scene 内双引号标签——白名单外的文字不会上卡面");
+        console.log("• 贴原图的槽位必须带来源标记：原文图 {{asset:名|路径}}（=original）、源码复现图 {{asset:名|路径|repro}}——来源分类会写进伴随 JSON 账本，AI 画的元素不许冒充原图（compose 拒贴 |drawn 的 asset）");
+        console.log("• 提示词总预算 32000 字节；scene 过长会被拒");
+        console.log("• 完成后执行: pf craft --scene \"<你写的 scene 段>\"（其余参数照旧）→ render");
+        return;
+      }
+
       // 文档级风格卡自动注入：全文多图画风统一（用户实测：只优化部分图、画风各異 → 割裂）
       let card = null;
       try { card = readMeta(arg("--doc"))?.styleCard?.text || null; } catch {}
@@ -1106,10 +1873,85 @@ async function main() {
         journal: arg("--journal") || "",
         // 🔴 画布比（V10 事故修复）：画布句从这里拼接，并经伴随 JSON 传给 render
         ratio: arg("--ratio") || "",
+        // 🔴 承载意思的几何约束（2026-09-26 Swin 实测补）：精确结构类图必填，
+        // QA 包据此出逐项几何核验清单（AI 渲染保证不了，见 craft.mjs 同参注释）
+        geometry: arg("--geometry") || "",
+        // 🔴 思考外置（2026-10-14）：宿主 AI 看图思考后写的自然语言画面段，直通进提示词
+        // 主体并跑护栏；带 --scene 时跳过内置词典推导（词典降为无 scene 时的兜底）
+        scene: arg("--scene") || "",
         // 🔴 多轮精修（2026-09-21）：上一版视觉核验的缺陷逐条拼接，"缺陷1; 缺陷2"
         fixes: arg("--fixes") || "",
       });
       // 提示词走 stdout（--out 或重定向都行）；诊断走 stderr 不污染
+      // ---- 🔴 模块对账审查（2026-10-15 用户问「有没有真正尊重原文」——实锤：宿主 AI 拿了原图
+      // 可以只贴一角/示意性重画，没人核对原图模块是否被交代）。规则：图注里出现的模块/方法
+      // 术语必须在 scene/stages/intent 里可查；缺了 = 告警要求宿主 AI 亲眼看原图逐模块决定
+      // 去留并写理由（省略要有意，不许默认丢失）。整图贴 = 全量保真；取局部用 crop= 标签。
+      // ---- 🔴 省略清单（2026-10-15 用户定规「用户ai必须给出去掉的原因，否则基本尊重原作者意图，
+      // 拿不准要问用户」）：--omissions "模块=理由; 模块2=理由2" 是省略的**唯一**合法出口——
+      // 写在 scene 里的"省略理由"机制读不到，等于没写。声明的省略落 sidecar reconciliation
+      // 段，assemble 时随成图回显（用户一眼看到少了什么、为什么少）；未声明的缺失术语 =
+      // 告警升级：补图 / 声明理由 / 问用户，三选一，不许默默省略。
+      // 🔴 位置修正（2026-10-15 自查实锤）：原放在质量门/字节预算/产物体检三道 die **之后**——
+      // 门禁拒绝时对账告警永远不出现，恰是宿主最需要它的场景。搬到 craftPrompt 返回后立即跑、
+      // 立即打印（结尾总打印处过滤【模块对账】防重复），die 前也可见。
+      {
+        const omissions = (arg("--omissions") || "")
+          .split(/[;；]/).map((s) => s.trim()).filter(Boolean)
+          .map((pair) => {
+            const eq = pair.indexOf("=");
+            return eq > 0
+              ? { module: pair.slice(0, eq).trim(), reason: pair.slice(eq + 1).trim() }
+              : { module: pair, reason: "" };
+          });
+        const omissionsCover = (term) => {
+          const t = term.toLowerCase();
+          // 词级覆盖（"LiSiam" 能被 "LiSiam、LRL 行=图注已说明只对比方法" 这类声明盖住）：
+          // 声明模块名与术语互含，或拆词后任一实词互含
+          return omissions.some((o) => {
+            const m = o.module.toLowerCase();
+            if (m.includes(t) || t.includes(m)) return true;
+            const mw = m.split(/\s+/).filter((w) => w.length >= 3);
+            return mw.some((w) => t.includes(w) || w.includes(t));
+          });
+        };
+        try {
+          const mDoc = path.basename(resolveDoc(arg("--doc")));
+          const mMeta = readMeta(mDoc);
+          const mImgBlocks = (mMeta.blocks || []).filter((b) => b.images && b.images.length);
+          // 🔴 槽位标记剥离（2026-10-15 自查实锤）：scene 里 {{asset:DFDC_ours|C:/...DFDC.pdf}}
+          // 的名字/路径含术语时，「文件名里出现」被误判成「图里已交代」——自指污染，
+          // 对账永远查不出这类缺失。对账看的是画面内容规划，不是文件名。
+          const hayAll = [arg("--scene"), arg("--stages"), arg("--intent")].filter(Boolean).join(" ")
+            .replace(/\{\{[^}]*\}\}/g, " ").toLowerCase();
+          const GENERIC = /^(figure|fig|the|this|we|our|note|given|overview|qualitative|quantitative|comparison|evaluations?|visual|correlation|ablation|study|results?|table|left|right|top|bottom|framework|method|approach|dataset|performance|different|various|across|from|denotes)$/i;
+          const reconLedger = [];
+          for (const s of r.slots || []) {
+            if (s.kind !== "asset") continue;
+            const base = path.basename(String(s.value).split(/[\\/]/).pop()).replace(/\.(pdf|png|jpe?g)$/i, "");
+            const hit = mImgBlocks.find((b) => b.images.some((im) => path.basename(String(im)).replace(/\.\w+$/i, "") === base));
+            const caption = hit ? String(hit.text || "") : "";
+            if (!caption) continue;
+            const terms = [...new Set((caption.match(/\b[A-Z][A-Za-z0-9]{3,}(?:\s+[A-Z][A-Za-z0-9]{3,})*/g) || []))]
+              .map((t) => t.trim()).filter((t) => !GENERIC.test(t));
+            // 多词短语拆到词级查：任一实词命中即算体现（"Qualitative DSSIM"→scene 有 DSSIM 就不报）
+            const missing = terms.filter((t) => {
+              const words = t.toLowerCase().split(/\s+/).filter((w) => !GENERIC.test(w));
+              if (!words.length) return false;
+              if (words.some((w) => hayAll.includes(w))) return false;
+              return !omissionsCover(t); // 已声明省略的术语不再算缺失（理由落库可审计）
+            });
+            const omitted = terms.filter((t) => omissionsCover(t));
+            if (omitted.length) reconLedger.push({ figure: base, omitted, omissions: omissions.filter((o) => omitted.some((t) => omissionsCover(t))) });
+            if (missing.length) {
+              r.warnings.push(`【模块对账·未交代】"${base}" 的原文图注提到 ${missing.join("、")}，scene/stages/intent 里没出现、也没有省略声明——基本尊重原作者意图：要么这些模块进图（整图贴=全量保真；取局部用 {{asset:名|路径|crop=左,上,宽,高}}，坐标按真实像素），要么 --omissions "${missing[0]}=<去掉的理由>" 声明（理由会随成图回显给用户）；**给不出理由或拿不准该不该省——停下来问用户，不许默默省略**。示意性重画不许替代原图模块。`);
+            }
+          }
+          if (omissions.length) r.reconciliation = omissions; // sidecar 落库（assemble 回显）
+          // 立即打印：后面三道门禁任何一道 die，这里已经看到了
+          r.warnings.filter((w) => w.includes("【模块对账")).forEach((w) => console.error("⚠️ " + w));
+        } catch { /* 模块对账是增强审查，meta 缺失不阻塞出题 */ }
+      }
       // ---- 🔴 输入质量门（2026-09-21 定规）：劣质输入出不了提示词文件 ----
       // 弱模型无视 stderr 的 ⚠️，所以 blocker 直接 exit 1：weak AI 看到 exit!=0 会读 stdout 改命令重试
       const { scoreCraft } = await import("../src/quality.mjs");
@@ -1175,7 +2017,7 @@ async function main() {
         die(`craft 拒绝：输入质量不达标（${q.blockers.length} 个 blocker，见上）。逐条改完重跑（确要硬闯加 --force "理由"）`,
           `pf distill --at "<章节 段号>" —— 从原文抽实体/阶段素材再填空`);
       }
-      const bytesOverCraft = Buffer.byteLength(r.prompt, "utf8") > 8000;
+      const bytesOverCraft = Buffer.byteLength(r.prompt, "utf8") > 32000;
       if (has("--force") && (q.blockers.length || srcForced || bytesOverCraft)) {
         // 🔴 红队实测：--force 硬闯无留痕（events.jsonl 查不到）——绕门必须落审计事件（带理由）
         try {
@@ -1192,14 +2034,14 @@ async function main() {
         } catch { /* 无打开项目时跳过留痕 */ }
       }
 
-      // ---- 🔴 提示词字节预算（v18 事故：8205 字节被渲染端 prompt_too_long 拒绝，白烧一轮）----
+      // ---- 🔴 提示词字节预算（32000，2026-10-13 从 8000 放开；旧 v18 事故 8205 被拒已不适用）----
       // craft 是唯一能提前看到全量的地方——超预算在这里拦，别等 render 花钱才知道。
       const promptBytes = Buffer.byteLength(r.prompt, "utf8");
-      console.error(`── 提示词 ${promptBytes} 字节（渲染端上限 ≈8000）──`);
-      if (promptBytes > 8000 && !has("--force")) {
-        die(`提示词 ${promptBytes} 字节，超渲染端预算（≈8000，实测 8205 会被 prompt_too_long 拒绝）——先精简再出：把已验证遵守的 fix 沉淀进 --stages 措辞并从 --fixes 删除（pf refine 看活跃修正），或砍掉次要阶段要点`,
+      console.error(`── 提示词 ${promptBytes} 字节（渲染端上限 32000）──`);
+      if (promptBytes > 32000 && !has("--force")) {
+        die(`提示词 ${promptBytes} 字节，超渲染端预算（32000）——先精简再出：把已验证遵守的 fix 沉淀进 --stages 措辞并从 --fixes 删除（pf refine 看活跃修正），或砍掉次要阶段要点`,
           `pf refine <figureId> 看活跃修正清单（--settle 沉淀已遵守项）`);
-      } else if (promptBytes > 7600) {
+      } else if (promptBytes > 30000) {
         console.error(`⚠️ 提示词 ${promptBytes} 字节逼近预算——这轮能出，但再叠 fixes 可能爆；已遵守的修正及时沉淀。`);
       }
 
@@ -1225,6 +2067,7 @@ async function main() {
         } catch { /* 无打开项目时跳过留痕 */ }
       }
 
+      // （模块对账/省略清单已搬到 craftPrompt 返回后、门禁 die 之前——2026-10-15 自查修正）
       const out = toWinPath(arg("--out"));
       if (out) {
         // 🔴 红队实测（2026-09-23 fuzzA）：--out 静默覆盖任意已存在文件 = 弱 AI 指向论文/配置即数据损毁
@@ -1254,8 +2097,16 @@ async function main() {
           colors: arg("--colors") || "",
           lang: arg("--lang") || "en",
           fixes: arg("--fixes") || "",
+          // 🔴 scene 直通原文落盘（refine 重拼依据）；slots = 资产槽位清单（pf compose 用）
+          scene: arg("--scene") || "",
+          slots: r.slots || [],
+          // 🔴 省略清单落库（2026-10-15）：--omissions 声明的模块省略+理由——assemble 随成图
+          // 回显，用户一眼看到图里少了哪些原文模块、为什么少；没有这段=没交代
+          reconciliation: r.reconciliation || [],
           at: atArg || "",
           suggestedRatio: r.suggestedRatio,
+          // 🔴 承载意思的几何约束（2026-09-26）：QA 包逐项核验的基准
+          geometry: r.geometry || arg("--geometry") || "",
           generatedAt: new Date().toISOString(),
           warnings: r.warnings || [],
         }, null, 2), "utf8");
@@ -1269,11 +2120,22 @@ async function main() {
         console.log(r.prompt);
       }
       console.error("");
-      if (r.warnings?.length) r.warnings.forEach((w) => console.error("⚠️ " + w));
+      if (r.warnings?.length) r.warnings.filter((w) => !w.includes("【模块对账")).forEach((w) => console.error("⚠️ " + w));
+      if (r.reconciliation?.length) {
+        console.error("── 省略清单（已声明，理由随成图回显）──");
+        for (const o of r.reconciliation) console.error(`   · ${o.module}${o.reason ? ` = ${o.reason}` : "（⚠️ 没写理由——补上，或问用户）"}`);
+      }
       if (r.typeMeta) {
         console.error(`── 图型「${r.typeMeta.name}」──`);
         console.error(`   什么时候用: ${r.typeMeta.when}`);
         console.error(`   构图思考:   ${r.typeMeta.think || "（见 pf types show " + r.typeMeta.id + " 的示例）"}`);
+        // 🔴 成品示例（2026-10-13 调研 PaperBanana：Planner 靠「文本→成品图」示例对学会写描述）：
+        // 宿主 AI 是本产品的 Planner——craft 时当场给它一条照抄结构的示范，show 句的
+        // 具体度（形状/颜色/母题）就是它该达到的水平
+        if (r.typeMeta.example?.cmd) {
+          console.error(`   成品示例（照抄结构、换实体；注意 show 句的具体度）:`);
+          console.error(`     ${r.typeMeta.example.cmd}`);
+        }
       }
       console.error("── 写手守卫（你写/改提示词时遵守；已内建在规则层，勿写进图模型提示词）──");
       r.writerGuard?.forEach((g, i) => console.error(`G${i + 1}. ${g.slice(0, 100)}…`));
@@ -1311,10 +2173,10 @@ async function main() {
         console.log(entLine ? entLine[1] : `（craft 提示词全文，自行找实体清单）\n${(last.prompt || "").slice(0, 800)}`);
         console.log("");
       } else {
-        console.log("渲染后视觉核验（每张图必过；任何一条不过 = standard 重出，别把问题图推给用户审批）：");
+        console.log("渲染后视觉核验（每张图必过；按「结构/风格/保真」三个镜头逐条过，任何一条不过 = standard 重出，别把问题图推给用户审批）：");
         console.log("（提示：pf qa <figureId> 是核验闭环命令——任务包+--pass/--fail 写回；approve 只认最新版 QA 记录）");
       }
-      QA_CHECKLIST.forEach((c) => console.log(c));
+      printQaChecklist(QA_CHECKLIST, "");
       console.log("\n写回: pf qa <figureId> --pass --note \"依据\" / --fail --note \"缺陷1; 缺陷2\"");
       return;
     }
@@ -1409,11 +2271,12 @@ async function main() {
           console.log(`   ${added} 条缺陷已写进精修状态机（活跃修正共 ${fig.activeFixes.length} 条）`);
           const cmd = refineCommand(fig);
           if (cmd) {
-            console.log(`—— 下一轮 craft 命令（直接复制执行）——`);
+            console.log(`—— 下一轮 craft 命令（直接复制执行；修正已改为沉淀指引，见下方）——`);
             console.log(`  ${cmd}`);
-            console.log(`  流程：craft → pf render --force "修正轮"（premium 修正轮）→ pf inspect + 亲眼核验 → pf qa ${fid} --pass`);
+            settleGuidance(fig).forEach((l) => console.log(l));
+            console.log(`  流程：按上方指引把修正写进 --stages 后 craft → pf render --force "修正轮: 理由" --ref prev（premium 修正轮；--ref prev 带上一版做 img2img 条件，画对的部分不漂移）→ 亲眼核验 → pf qa ${fid} --pass`);
           } else {
-            console.log(`⏭ 下一步: pf refine ${fid} —— 最新版无 craft 伴随 JSON，手动重拼命令并把上面修正全量传 --fixes`);
+            console.log(`⏭ 下一步: pf refine ${fid} —— 最新版无 craft 伴随 JSON，手动重拼命令（修正写进 --stages 措辞，不要传 --fixes）`);
           }
         }
         return;
@@ -1468,8 +2331,26 @@ async function main() {
         scLines.forEach((l) => console.log(l));
         console.log(`  任何阶段盒子缺失/标题不符/[画法]元素没画 = 布局漂移，Q9 FAIL（缺陷写具体到阶段，精修按阶段定位）。`);
       }
-      console.log(`—— 第 4 步：逐条核验（每条 PASS/FAIL + 图里的证据；先列出图上全部可见文字再逐条对照）——`);
-      QC.forEach((c) => console.log("  " + c));
+      // 🔴 通道归因（2026-09-26 Swin 实测定级）：standard + 图带文字 = Q1 预期 FAIL，
+      // 但这是通道问题不是设计缺陷——提前说清，宿主别把额度烧在 standard 精修循环里。
+      try {
+        const scCh = last.sidecar && fs.existsSync(last.sidecar) ? JSON.parse(fs.readFileSync(last.sidecar, "utf8")) : null;
+        const hasText = Boolean(entityLineOf(last.prompt)) || Boolean(String(scCh?.entities || "").trim());
+        if (last.model === "standard" && hasText) {
+          console.log(`—— ⚠️ 通道告警：本版 standard 且图带文字标签 ——`);
+          console.log(`  standard 档文字质量不可靠（2026-09-27 四样本复测：字符乱码或内容污染/轴标签错乱都可能出现，4/4 中招）：Q1/Q2/Q3 预期 FAIL。性质 = 通道选错，不是设计缺陷——直接 render --model premium --force "文字图不走 standard: 换通道重出" ，别在 standard 上反复精修。`);
+        }
+        // 🔴 承载意思的几何核验清单（2026-09-26）：craft 声明过 --geometry 才有此节
+        const geo = String(scCh?.geometry || "").trim();
+        if (geo) {
+          console.log(`—— 第 3d 步：几何核验（Q3 比对基准；AI 渲染不保证几何精确——逐项亲眼核对）——`);
+          geo.split(/[;；]/).map((g) => g.trim()).filter(Boolean).forEach((g) => console.log(`  □ ${g}`));
+          console.log(`  任何一项与图不符（轴标签重复/分界线落错行/偏移量不足）= 意思错，Q3 阻断级；精确结构类图建议直接走脚本/矢量路径，别反复烧 premium。`);
+        }
+      } catch { /* sidecar 缺失/损坏时跳过 */ }
+      console.log(`—— 第 4 步：逐条核验（按三个镜头过：结构/风格/保真；每条 PASS/FAIL + 图里的证据；先列出图上全部可见文字再逐条对照）——`);
+      printQaChecklist(QC);
+      console.log(`  通过标准：三个镜头各给一条量化依据（结构=盒子/元素数、风格=色相数/留白、保真=可见文字对上几条）——无数字的通过 = 放水，写回会被拒`);
       console.log(`—— 第 5 步：写回（approve 门禁只认最新版 QA 记录）——`);
       console.log(`  全部 PASS →  pf qa ${fid} --pass --note "量化依据（必填且须含数字：可见文字 N 条全对上/色相 X 个/留白 Y%/最小字号 Zpx）——无数字的通过 = 放水，写回会被拒"`);
       console.log(`  任何 FAIL →  pf qa ${fid} --fail --note "缺陷1; 缺陷2"（自动驳回+缺陷进精修状态机）`);
@@ -1544,12 +2425,13 @@ async function main() {
       // 自动重拼下一轮 craft 命令（与 qa --fail 共用同一份重拼逻辑）
       const cmd = refineCommand(fig);
       if (cmd) {
-        console.log(`—— 下一轮 craft 命令（直接复制执行；已遵守的修正先 --settle 移除再跑，防超 8000 字节）——`);
+        console.log(`—— 下一轮 craft 命令（直接复制执行；修正已改为沉淀指引，见下方）——`);
         console.log(`  ${cmd}`);
+        settleGuidance(fig).forEach((l) => console.log(l));
       } else {
-        console.log(`  ⚠️ 最新版无 craft 伴随 JSON（旧版本）——回 craft 手动重拼，把上面活跃修正全量传 --fixes`);
+        console.log(`  ⚠️ 最新版无 craft 伴随 JSON（旧版本）——回 craft 手动重拼（修正写进 --stages 措辞，不要传 --fixes）`);
       }
-      console.log(`  流程：render --force "修正轮"（premium 修正轮）→ pf inspect + 亲眼核验 → 零存疑才 review resolve --approve`);
+      console.log(`  流程：render --force "修正轮" --ref prev（premium 修正轮；--ref prev = 上一版做 img2img 条件，修缺陷不重掷骰子）→ pf inspect + 亲眼核验 → 零存疑才 review resolve --approve`);
       return;
     }
 
@@ -1705,7 +2587,7 @@ async function main() {
       // n-gram 频次，拉丁/西里尔/希腊/阿拉伯等走大写术语+高频词；中文后缀表只是启发式之一）----
       const { candidateEntities, splitSentences } = await import("../src/extract.mjs");
       const ents = candidateEntities(text, { limit: 12 });
-      console.log(`\n—— 候选实体（统计性抽取，任何语言都可能误抽——每个都要回上面原文核对出处再用；漏了分组结构=图不完整）——`);
+      console.log(`\n—— 候选实体核对清单（统计性抽取 ≠ 结论；逐条选用/剔除是宿主的内容判断，插件只记录你的决定）——`);
       if (!ents.length) {
         console.log("（没抽到——这段可能太短，试 --span 2 扩上下文；抽不出 ≠ 没有：直接从上面原文逐个拆名词模块，实体仍必须是原文里出现的词）");
       } else {
@@ -1716,10 +2598,16 @@ async function main() {
           const hits = paras.filter((b) => String(b.text || "").includes(e));
           const first = hits[0];
           const cnt = hits.reduce((n, b) => n + String(b.text).split(e).length - 1, 0);
-          const weak = cnt <= 1 ? "  ⚠️ 低证据（仅出现 1 次，人工确认再用）" : "";
-          console.log(`  ${e}  ×${cnt} · 首现 §${first ? first.secPath : "?"}${weak}`);
+          const weak = cnt <= 1 ? "  ⚠️ 低证据（仅出现 1 次）" : "";
+          console.log(`  □ ${e}  ×${cnt} · 首现 §${first ? first.secPath : "?"}${weak}`);
         }
-        // 🔴 双语对照格式提示（2026-09-22 用户拍板）：要英文卡面就带原文对照，溯源不断链
+        // 🔴 2026-09-27 流程化（用户定位：不做词汇规则，核对动作交给宿主）：
+        // 候选只是统计起点——误抽要剔、漏抽要补，判断权在宿主；插件把"逐条核对+补抽"
+        // 变成 craft 前的固定步骤（实测：直接拿候选 craft 会漏掉后面段落才定义的主角模块）。
+        console.log(`  ── 逐条核对（必须做，这是你的内容判断）──`);
+        console.log(`  · 每个候选回上面原文核对：✓ 选用（记下 §¶ 出处）或 ✗ 剔除（误抽的功能词/LaTeX 残渣）`);
+        console.log(`  · 主动补抽：这段要画但候选没有的模块（如在后文段落才定义的主角）——从上面原文补进来，必须是原文出现的词`);
+        console.log(`  · 核对完的最终实体清单才配填 --entities；分组结构（多数据集/类别/基线）整组丢失是最常见的漏法`);
         console.log(`  ℹ️ 想用英文标签（standard 档中文会乱码）→ 对照格式挑：--entities "英文标签|上面的中文原词, …"（英文进卡面、原文管溯源对账）`);
       }
 
@@ -1753,7 +2641,7 @@ async function main() {
       const { figureTypeBrief } = await import("../src/plan.mjs");
       console.log(`\n—— 用户确认卡（转给用户时用用户的语言；等他确认/修改后再 craft）——`);
       console.log(`  我计划在「${at}」这段后面配一张${figureTypeBrief(ft)}，内容取自这段原文：`);
-      console.log(`  · 拟画进图的要素：${ents.slice(0, 6).join("、") || "（待定——需要你告诉我这段里哪些词必须出现在图上）"}`);
+      console.log(`  · 拟画进图的要素：${ents.slice(0, 6).join("、") || "（待定——需要你告诉我这段里哪些词必须出现在图上）"}（候选仅供参考，我已按上面核对清单逐条筛选/补抽，最终以我填的 --entities 为准）`);
       if (sents.length) console.log(`  · 拟按这个顺序画：${sents.slice(0, 3).map((s) => s.slice(0, 30)).join(" → ")}`);
       console.log(`  · 有要增删的要素、或想换图的位置/类型，直接说；确认没问题回复"可以"我就开始出图`);
       return;

@@ -30,7 +30,7 @@ export function setAnchor(docId, { at, side = "after", quote, figure }) {
   // 🔴 2026-09-21 弱模型实测：新建锚点路径写死 state:"ok"，编造的 quote 被静默收下
   // （weak-agent-sim 第 14 轮：AI 编了句"YOLO-based end-to-end pipeline"当引文，直接 ✅）。
   // quote 给了就必须当场对账原文；对不上 → state:"changed" + quoteOk:false，CLI 打警告。
-  const q = quote ?? target.text.slice(0, 160);
+  const q = quote ?? target.text.slice(0, 400);
   const state = checkQuote(meta.blocks, q);
   const anchor = {
     id: "a" + crypto.randomBytes(2).toString("hex"),

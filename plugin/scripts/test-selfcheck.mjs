@@ -27,7 +27,9 @@ console.log("\n[1] 健康产物零 issue");
 console.log("\n[2] 内部护盾标记残留 → issue");
 {
   const r = craftPrompt(GOOD_INPUT);
-  const tampered = r.prompt.replace("Additional style notes:", " PF_PAL_SHIELD_0 Additional style notes:");
+  // 2026-10-13 组词重构后阶段图无 "Additional style notes:"（调色板句仅非阶段图兜底）——
+  // 护盾标记直接注入提示词头部，promptSelfCheck 只做 /PF_PAL_SHIELD/ 存在性检查
+  const tampered = ` PF_PAL_SHIELD_0 ${r.prompt}`;
   const sc = promptSelfCheck({ prompt: tampered, entities: [], stageTitles: [], suggestedRatio: null });
   ok(sc.issues.some((s) => s.includes("护盾标记")), "护盾残留被查出");
 }
@@ -55,8 +57,9 @@ console.log("\n[5] 阶段标题静默丢失 → issue");
   // 用一个【不是实体】的阶段标题测——否则实体句里的同名词会掩盖标题丢失
   const inp = { ...GOOD_INPUT, stages: "Input Image | show 3 thumbnails || Fusion Gate | merge multi-scale features; gate residuals || Fine Grader | transformer scoring; per-patch score" };
   const r = craftPrompt(inp);
-  // 提示词被 sanitize 折叠成单行——精确替换阶段标题的引号形态
-  const tampered = r.prompt.replace('Stage 2 — "Fusion Gate"', "Stage 2 — Fusion Gate");
+  // 2026-10-13 组词重构后阶段格式 = 场景叙述段 `Card 2 "Fusion Gate"` + 尾部白名单
+  // `"Fusion Gate"`——两处引号形态都要摘掉，否则白名单遮蔽场景段丢失
+  const tampered = r.prompt.replaceAll('"Fusion Gate"', "Fusion Gate");
   ok(tampered !== r.prompt, "注入生效（标题引号被摘）");
   const sc = promptSelfCheck({ prompt: tampered, entities: [], stageTitles: r.stageTitles, suggestedRatio: null });
   ok(sc.issues.some((s) => s.includes("Fusion Gate") && s.includes("阶段标题")), "阶段标题丢失被查出");
@@ -65,9 +68,11 @@ console.log("\n[5] 阶段标题静默丢失 → issue");
 console.log("\n[6] 配色句缺失 → issue");
 {
   const r = craftPrompt(GOOD_INPUT);
-  const tampered = r.prompt.replace(/Additional style notes:[^\n]+/, "removed");
+  // 2026-10-13 组词重构后阶段图配色契约 = 场景叙述段内嵌 pastel/fill 词（画布句还有大写
+  // "FILL" 也命中检查正则）——tamper 直接剔除全部 pastel/fill 词再验；断言文案同步为"配色契约"
+  const tampered = r.prompt.replace(/Additional style notes:[^\n]+/, "removed").replace(/fill|pastel/gi, "");
   const sc = promptSelfCheck({ prompt: tampered, entities: [], stageTitles: [], suggestedRatio: null });
-  ok(sc.issues.some((s) => s.includes("配色句")), "配色契约丢失被查出");
+  ok(sc.issues.some((s) => s.includes("配色契约")), "配色契约丢失被查出");
 }
 
 console.log("\n[7] 画布比回声脱钩 → issue");
