@@ -142,6 +142,14 @@ export const writeReview = (docId, obj) => withLock(projectDir(docId), () => {
   writeJson(path.join(projectDir(docId), "review.json"), { ...cur, ...obj }); // 按图合并：一张图的审批不冲掉另一张
 });
 
+// 工作流状态库（2026-10-17）：单活跃工作流整文件写入；writeWorkflow(docId, null) = 删除（reset 用）
+export const readWorkflow = (docId) => readJson(path.join(projectByDocId(docId), "workflow.json"), null);
+export const writeWorkflow = (docId, wf) => withLock(projectDir(docId), () => {
+  const file = path.join(projectDir(docId), "workflow.json");
+  if (wf === null) { try { fs.unlinkSync(file); } catch { /* 本就没有 */ } return; }
+  writeJson(file, wf);
+});
+
 export function saveFigureFile(docId, figureId, fileName, buf) {
   const dir = path.join(projectDir(docId), "figures", figureId);
   fs.mkdirSync(dir, { recursive: true });

@@ -142,6 +142,54 @@ prompt = **结构照搬** + **升级方向**，两部分都要：
 
 ---
 
+## 4.5 工作流状态标记（硬性清单——做到哪一步，标记说了算）
+
+升级/拼版流程不是"一口气做完汇报"，是**每完成一步就落一条标记**。状态库在本地，不在服务端（服务端只做出图 API）。宿主装有插件（有 `pf` 命令）用命令标记；纯 REST 宿主没有 pf，就维护同名的 `workflow-state.json`（字段见下），语义完全一致——缺的不是工具，是"每步必标记"这个动作。
+
+```bash
+# 开工：建立清单（upgrade = 优化已有图/整文升级）
+pf workflow init --kind upgrade --goal "<目标一句话>"
+pf workflow status                 # 随时看：哪几步完成、哪几步没做、哪些审查漏了 + 唯一下一步
+
+# 每步完成（乱序会被拒；context/selfcheck 必须带 --evidence 证据）
+pf workflow done context   --note "图注论点一句话" --evidence "首句：…｜尾句：…"
+pf workflow done genre     --note "comparison：结果对比体裁，理由…"
+pf workflow skip panels    --reason "单图无 panel 拼版"          # 仅 panels 可跳，必须给理由
+pf workflow done materials --note "裁片路径…"
+pf workflow done produce   --note "产物 figures/xxx.png"
+pf workflow done selfcheck --note "亲眼核验结论" --evidence "尺寸/文字/对齐逐条看到的证据"
+
+# 审查逐维记录（F=视觉对齐 G=合理分段 H=按原文思维优化；证据必填，"看起来没问题"=无效）
+pf workflow review --dim F --verdict PASS --evidence "行内图块零间距、行标竖排"
+pf workflow review --dim G --verdict FAIL --evidence "第二列与第三列间距不齐"   # FAIL 会打回，修完重审
+
+# acceptance 四项留痕（enhancement 写白名单内动作+参数；没做的写"有意不做：…"
+pf workflow acceptance --story "…" --segmentation "…" --alignment "…" --enhancement "对比度拉伸 1-99.5 百分位；有意不做：不超分不重绘"
+
+# 交付硬门：缺步骤/缺审查/有 FAIL/缺 acceptance → exit 1，不许交付
+pf workflow check
+```
+
+`workflow-state.json`（无 pf 宿主的等价物）字段与 `pf workflow status` 输出对齐：
+
+```json
+{
+  "kind": "upgrade", "goal": "…",
+  "steps": [ { "id": "context", "status": "done|skipped|pending", "note": "…", "evidence": "…", "at": "ISO时间" } ],
+  "reviews": [ { "dim": "F", "verdict": "PASS", "evidence": "…" } ],
+  "acceptance": { "story": "…", "segmentation": "…", "alignment": "…", "enhancement": "…" }
+}
+```
+
+规则（两条通道通用）：
+
+- **步骤固定 9 步、按序推进**：context → genre → panels(可跳) → materials → produce → selfcheck → review(F/G/H) → acceptance → deliver
+- **证据先于标记**：context/selfcheck/review 没有 evidence 就不许标 done——"读过""看过"要拿出能复查的证据
+- **FAIL 打回**：任何审查维判 FAIL，修完重审到 PASS 才算过；带 FAIL 交付 = check 不过
+- **交付前 check 必须全绿**（exit 0）；无 pf 宿主就把状态文件里 `pending` 项逐条列在汇报里——清单未清 = 不许交付
+
+---
+
 ## 5. 追溯台账：figure-ledger.json
 
 用户问「哪一次生图做了什么、想退回哪一版」——在**工程根目录**维护一个 JSON 台账，只追加、不覆盖、随工程进 git。本地文件即可，不需要服务端建表：轻量、随项目走、git 天然版本化。
@@ -219,7 +267,8 @@ prompt = **结构照搬** + **升级方向**，两部分都要：
 
 1. 扫描全文 → 已有图分型（§0）+ 插图位定位（`document-workflow.md` §1）
 2. figure plan 清单 + 集中澄清一轮（§1 必问 4 项）→ 用户确认处置方案
-3. A1 图：数据溯源 + 本地重绘（§3）；A2/B 图：构造 prompt（§4）
-4. 全部 standard 草稿 → 视觉自查 → 汇总给用户
-5. 用户确认 → 逐张 premium 2K 定稿 → 插回文档（`document-workflow.md` §3）
-6. 写台账（§5）→ 汇报：位置 → 图文件 → 版本 → 台账路径，提示图号/交叉引用需最终复核
+3. **建工作流清单**（§4.5：`pf workflow init --kind upgrade` 或 `workflow-state.json`）——之后每步完成即标记
+4. A1 图：数据溯源 + 本地重绘（§3）；A2/B 图：构造 prompt（§4）
+5. 全部 standard 草稿 → 视觉自查 → 汇总给用户
+6. 用户确认 → 逐张 premium 2K 定稿 → 插回文档（`document-workflow.md` §3）
+7. 写台账（§5）→ **工作流 check 全绿**（§4.5：`pf workflow check` exit 0）→ 汇报：位置 → 图文件 → 版本 → 台账路径，提示图号/交叉引用需最终复核

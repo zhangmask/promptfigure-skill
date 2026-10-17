@@ -119,6 +119,16 @@ promptFigure 本地插件 v${VERSION} —— 在你的 AI 宿主里为论文配�
   pf review ai [<figureId>|--all]     AI 辅助审批：输出审批任务包（图路径+实体清单+阶段画法清单+核验清单+裁决流程），
                                       你读图逐条核验后把判定写回（GUI 里用户可见 AI 意见并可改判）
 
+工作流状态库（升级/审核类任务的硬性清单——每做完一步必须标记，交付前 check 必须全绿）：
+  pf workflow init --kind upgrade|review [--goal "目标"]     建立工作流（升级已有图 / 阶段4成图审核）
+  pf workflow status                  清单总览：哪几步完成、哪几步没做、哪些审查漏了 + 唯一下一步
+  pf workflow done <步骤id> --note "结论/产物" [--evidence "证据"]   标记完成（乱序/缺证据会被拒）
+  pf workflow skip <步骤id> --reason "为什么不适用"          仅限可跳过步骤（必须给理由）
+  pf workflow review --dim F|G|H --verdict PASS|FAIL --evidence "图里看到的证据"   审查逐维记录（A-E 同理）
+  pf workflow acceptance --story "…" --segmentation "…" --alignment "…" --enhancement "…"
+                                      四项留痕（enhancement 白名单外措辞会被拒）
+  pf workflow check                   🔴 交付硬门：缺步骤/缺审查/有 FAIL/缺 acceptance → exit 1，不许交付
+
 服务：
   pf serve                   前台启动本地服务（一般不用，pf open 会自动拉起）
   pf tray                    托盘壳（pf open 已自动拉起；用于手动补启；需 python + pystray）
@@ -2775,6 +2785,84 @@ async function main() {
         console.log("\n⚠️ 存在无理由的绕门记录（2026-09-22 收口前的遗留）——这些版本的可信度需人工复核");
       }
       console.log(`\n追究出口：pf inspect <figureId> 看图 · pf qa <figureId> 重新核验 · 对可疑版本直接 review resolve --reject 打回`);
+      return;
+    }
+
+    case "workflow": {
+      // 🔴 工作流状态库（2026-10-17 用户拍板"服务端只做 API，步骤标记放本地"）：
+      // 升级/审核流程过去只活在技能文档里，做没做全凭自觉。现在每步必须 pf workflow done
+      // 落一条标记、审查逐维落记录，status/check 随时回答"做到哪一步、哪些没做、
+      // 哪些审查漏了"——硬性清单，不是文档。交付前 check 不过 = 不许交付。
+      const W = await import("../src/workflow.mjs");
+      // 位置参数解析：rest 里混着 --doc/--kind 等 flag——扫到第一个 --flag 就停，
+      // 只取裸词作 子命令 / 步骤id（pf workflow --doc X done produce --note "…"）
+      const wfArgs = [];
+      for (let i = 0; i < rest.length; i++) {
+        const a = rest[i];
+        if (a === "--doc") { i++; continue; }
+        if (a.startsWith("--")) break;
+        wfArgs.push(a);
+      }
+      const sub = wfArgs[0] || "";
+      const stepId = wfArgs[1];
+      const docIdW = path.basename(resolveDoc(arg("--doc")));
+      const wfFail = (msg, hint) => die(msg, hint);
+      if (sub === "init") {
+        let kind = arg("--kind");
+        if (has("--reset")) { W.reset(docIdW, { kind: kind || (W.readActive(docIdW) || {}).kind || "upgrade", goal: arg("--goal") || "" }); console.log("♻️ 旧工作流已重置"); }
+        if (!kind) {
+          const cur = W.readActive(docIdW);
+          kind = cur?.kind;
+          if (!kind) wfFail("缺 --kind：pf workflow init --kind upgrade|review（upgrade=优化已有图/整文升级；review=阶段4成图审核）", "pf workflow init --kind upgrade --goal \"<目标一句话>\"");
+        }
+        const wf = W.init(docIdW, { kind, goal: arg("--goal") || "" });
+        console.log(`✅ 工作流已建立（${wf.kind}）——每做完一步就标记，步骤清单如下：\n`);
+        console.log(W.renderStatus(wf));
+        return;
+      }
+      if (sub === "status") {
+        const wf = W.readActive(docIdW);
+        if (!wf) wfFail("没有活跃工作流——pf workflow init --kind upgrade|review", "pf workflow init --kind upgrade");
+        console.log(W.renderStatus(wf));
+        return;
+      }
+      if (sub === "done") {
+        if (!stepId) wfFail("用法：pf workflow done <步骤id> --note \"结论/产物\"（context/selfcheck 还要 --evidence）", "pf workflow status 看全部步骤 id");
+        const wf = W.done(docIdW, stepId, { note: arg("--note") || "", evidence: arg("--evidence") || "" });
+        console.log(`✅ ${stepId} 已标记\n`);
+        console.log(W.renderStatus(wf));
+        return;
+      }
+      if (sub === "skip") {
+        if (!stepId) wfFail("用法：pf workflow skip <步骤id> --reason \"为什么不适用\"");
+        W.skip(docIdW, stepId, { reason: arg("--reason") || "" });
+        console.log(`⏭️ ${stepId} 已跳过（理由已留痕）`);
+        return;
+      }
+      if (sub === "review") {
+        const wf = W.review(docIdW, { dim: arg("--dim"), verdict: arg("--verdict"), evidence: arg("--evidence") || "" });
+        const r = wf.reviews.find((x) => x.dim === String(arg("--dim")).toUpperCase());
+        console.log(`${r.verdict === "PASS" ? "✅" : "❌"} 审查 ${r.dim} → ${r.verdict}（证据已留痕）\n`);
+        console.log(W.renderStatus(wf));
+        return;
+      }
+      if (sub === "acceptance") {
+        W.acceptance(docIdW, {
+          story: arg("--story"), segmentation: arg("--segmentation"),
+          alignment: arg("--alignment"), enhancement: arg("--enhancement"),
+        });
+        console.log("✅ acceptance 四项已留痕（enhancement 白名单外措辞会被拒绝，没做就如实写「有意不做」）");
+        return;
+      }
+      if (sub === "check") {
+        const wf = W.readActive(docIdW);
+        if (!wf) wfFail("没有活跃工作流——pf workflow init --kind upgrade|review");
+        const r = W.renderCheck(wf);
+        console.log(r.text);
+        if (!r.ok) process.exitCode = 1; // 硬门：不过 = 不许交付（技能文档以此为准）
+        return;
+      }
+      wfFail(`未知子命令 "${sub}"（init / status / done / skip / review / acceptance / check）`, "pf workflow status");
       return;
     }
 
