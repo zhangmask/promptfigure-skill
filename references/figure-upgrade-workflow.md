@@ -166,7 +166,10 @@ pf workflow review --dim G --verdict FAIL --evidence "第二列与第三列间�
 # acceptance 四项留痕（enhancement 写白名单内动作+参数；没做的写"有意不做：…"
 pf workflow acceptance --story "…" --segmentation "…" --alignment "…" --enhancement "对比度拉伸 1-99.5 百分位；有意不做：不超分不重绘"
 
-# 交付硬门：缺步骤/缺审查/有 FAIL/缺 acceptance → exit 1，不许交付
+# 旧状态文件 / 产物被手工补上时，给产物重新取证（哈希+尺寸+mtime）
+pf workflow bind --file "figures/xxx.png"
+
+# 交付硬门：缺步骤 / 缺审查 / 有 FAIL / 缺 acceptance / 产物哈希不符 / 证据是空话 → exit 1，不许交付
 pf workflow check
 ```
 
@@ -185,6 +188,13 @@ pf workflow check
 
 - **步骤固定 9 步、按序推进**：context → genre → panels(可跳) → materials → produce → selfcheck → review(F/G/H) → acceptance → deliver
 - **证据先于标记**：context/selfcheck/review 没有 evidence 就不许标 done——"读过""看过"要拿出能复查的证据
+- 🔴 **证据要有锚点，空话会被当场拒**（CLI 机判，不是建议）：「看过了」「没问题」「看起来很好」「更美观」「对齐了」这类一律拒绝。至少要有一项——**数字**（4 行 / 3 列 / 12px）、**文件路径**、**原文引号片段**、**英文术语**、**位置度量词**（行/列/间距/基线/字号/截断/重叠…）。写不出具体数字，说明你没真看
+- 🔴 **产物必须是磁盘上真实的文件**：`done produce --note "产物 figures/xxx.png"` 会**当场打开这个文件**——不存在直接拒，并打印它试过的路径。标记时记下 sha256 / 尺寸 / 字节数 / mtime，`check` 时重新核对：
+  - 文件被删、被替换、被改过 → 报「sha256 不符」
+  - 文件 mtime 早于开工时间 → 报「这是旧图，不是本轮产物」
+  - 尺寸 < 64px 或 < 1KB → 报「占位图」
+  - 旧状态文件没有取证记录（模板 v1）→ `pf workflow bind --file "<产物路径>"` 补一次
+- 🔴 **acceptance 的 alignment / enhancement 必须带量化**：对齐写 px/行/列/基线，增强写参数（如「对比度拉伸 1-99.5 百分位」）。写「更美观」「对齐了」会被拒——写不出数字 = 没真做。story / segmentation 写清论点与分段逻辑即可，不需要数字
 - **FAIL 打回**：任何审查维判 FAIL，修完重审到 PASS 才算过；带 FAIL 交付 = check 不过
 - **交付前 check 必须全绿**（exit 0）；无 pf 宿主就把状态文件里 `pending` 项逐条列在汇报里——清单未清 = 不许交付
 - **报错不许绕，更不许删档重来**（状态库的三类报错各有恢复路径，照做，别自己发明）：

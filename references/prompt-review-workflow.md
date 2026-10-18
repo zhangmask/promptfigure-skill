@@ -196,7 +196,7 @@ Agent B 审核后回写：`"review": {"verdict": "pass|reject", "reasons": ["实
 | H 按原文思维 | 一句话说得出原文图注论点 + 本次优化动作服务该论点；展示惯例（输入对照/行标语义/配对结构）未被剥掉 |
 
 **审查结论要落进工作流状态库**（做到哪、审没审，标记说了算，不走自觉）：
-宿主装有插件（有 `pf` 命令）就逐维落记录——`pf workflow review --dim F --verdict PASS|FAIL --evidence "图上实况"`（A–E 同理，证据必填）；FAIL 会打回工作流，修完重审到 PASS。升级/拼版类另需 `pf workflow acceptance` 四项留痕、交付前 `pf workflow check` 全绿（见 `figure-upgrade-workflow.md` §4.5）。纯 REST 宿主没有 pf：把每维 verdict + 实况追加进 `workflow-state.json` 的 `reviews` 数组，语义一致。
+宿主装有插件（有 `pf` 命令）就逐维落记录——`pf workflow review --dim F --verdict PASS|FAIL --evidence "图上实况"`（A–E 同理，证据必填）；FAIL 会打回工作流，修完重审到 PASS。**证据要带锚点**（数字/位置度量/原文引文）：「看起来没问题」「对齐了」会被 CLI 当场拒，因为那是评价不是事实。升级/拼版类另需 `pf workflow acceptance` 四项留痕、交付前 `pf workflow check` 全绿（见 `figure-upgrade-workflow.md` §4.5）。纯 REST 宿主没有 pf：把每维 verdict + 实况追加进 `workflow-state.json` 的 `reviews` 数组，语义一致。
 
 ### 审核卡（每张图必出，格式固定）
 

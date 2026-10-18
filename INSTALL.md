@@ -1,6 +1,6 @@
 # 安装这个技能（AI Agent Skill）
 
-> **版本 1.8.1**（2026-09-24）。下载页：https://promptfigure.top/skill 。查最新版：`curl -s https://promptfigure.top/downloads/promptfigure-api.version.json`；本地已装版本看 `SKILL.md` frontmatter 的 `version`。版本语义：主版本=接口不兼容改动（需重读 SKILL.md），次版本=新增能力，修订号=勘误。
+> **版本 1.8.2**（2026-09-24）。下载页：https://promptfigure.top/skill 。查最新版：`curl -s https://promptfigure.top/downloads/promptfigure-api.version.json`；本地已装版本看 `SKILL.md` frontmatter 的 `version`。版本语义：主版本=接口不兼容改动（需重读 SKILL.md），次版本=新增能力，修订号=勘误。
 
 把 `promptfigure-api/` 整个文件夹放进你的 AI 工具的技能目录即可：
 
@@ -13,6 +13,18 @@
 
 安装后对 AI 说「帮我用 promptFigure 画一张 XXX 图」，它会自动读取 `SKILL.md` 并按流程执行：
 注册/登录 → 拿 key（或复用你已有的 `PROMPTFIGURE_KEY`）→ 调 API 出图。
+
+## 让 AI 每次都想起这个技能（推荐，30 秒）
+
+技能靠 description 匹配触发——宿主可能"自己动手画"而根本不读技能。2026-10-18 实测：claude CLI 收到「接着工作流继续」后，全程没读技能、没碰状态库，自己写 matplotlib 脚本出了张柱状图并宣布完成，而原文要的是 crop + localization map 配对图。
+
+在**项目根目录**的 `CLAUDE.md` / `AGENTS.md` / `.cursorrules`（按你的工具选一个）里加下面这段，把入口钉死：
+
+```text
+做论文配图 / 改图 / 升级图之前，先读 promptfigure-api 技能（SKILL.md，路径按你的安装位置改）。
+所有图任务必须走 pf workflow：status → init → done/review → check，交付消息必须带 pf workflow receipt 的一行凭据。
+没有交付凭据的"已完成"不算完成。
+```
 
 ## 本包还附带本地插件（plugin/）
 
@@ -41,5 +53,5 @@ curl -s https://promptfigure.top/downloads/promptfigure-api.version.json
 ```
 
 本地 `version` 低于线上 `version` → 到下载页取最新包：https://promptfigure.top/skill
-（直链：https://promptfigure.top/downloads/promptfigure-api.zip ，或 GitHub Release 资产 promptfigure-api-1.8.1.zip）
+（直链：https://promptfigure.top/downloads/promptfigure-api.zip ，或 GitHub Release 资产 promptfigure-api-1.8.2.zip）
 安装说明与 API 文档：https://promptfigure.top/docs/zh-CN/api

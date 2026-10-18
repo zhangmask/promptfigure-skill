@@ -1,10 +1,10 @@
 ---
 name: promptfigure-api
 description: 用 promptFigure 生成科研/学术配图（流程图、机制图、管线图、技术路线图、图形摘要），以及优化已有图表、整文批量升级（数据图本地重绘 + 示意图 AI 重构 + 可编辑矢量版 + 追溯台账）。当用户要「画一张图」「生成论文配图/示意图/机制图/graphical abstract」「把论文里的图变好看/变高级」「批量优化整篇文章的图」「要可编辑的矢量图/PPT 版」、给了 PDF/WPS/Word 文稿要配图或要主动建议插图位、或要配置 promptFigure API key、或要用 REST 接口批量出图时使用。走 https://promptfigure.top 的 /api/v1/generate，Bearer pf_ key 鉴权，返回 base64 PNG。强制学术字体规范（图内无衬线、禁手写/花体）与上下文蒸馏规则（原文段落绝不直接进 prompt，先蒸馏成实体/结构/图种三清单再组装）。网页端有多轮问询/二次确认，API 端一次性提交——所以要把用户绘图意图一次说清楚，服务端负责润色成完整示意。
-version: 1.8.1
+version: 1.8.2
 license: MIT
 metadata:
-  version: "1.8.1"
+  version: "1.8.2"
   author: promptFigure (zhangmask)
   homepage: https://promptfigure.top
   repository: https://github.com/zhangmask/promptfigure-skill
@@ -18,6 +18,10 @@ metadata:
 **线上站点**：https://promptfigure.top
 
 ## 🔴 工作流总览：先对齐，后花钱
+
+**🔴 进门第一件事（比下面所有阶段都优先）**：任何"画图 / 改图 / 升级图"任务，第一个动作不是写 prompt，是**看状态库**——`pf workflow status`（有未完结工作流就从记录处续，禁止重头再来、禁止另起一套自己的流程）→ 没有就 `pf workflow init --kind upgrade|review`。状态库在**用户本地**（`~/.promptfigure/projects/<docId>/workflow.json`），不在服务端；没有 `pf` 命令的宿主维护同名 `workflow-state.json`，语义一致。
+
+**🔴 交付必须带交付凭据**：`pf workflow receipt` 输出的一行（步骤进度 / 审查结论 / 产物 sha256 / check 是否通过），原样贴进汇报。**没有这一行的"已完成"不算交付**——用户看到缺这行可以直接退回。跳过状态库自己干，图画得再漂亮也等于没审过（2026-10-18 实测后果：宿主绕开状态库自建图并宣布完成，图与原文论点不符却无人拦截）。
 
 **整个流程里唯一花钱的动作是 API 调用**。所有迭代都在本地免费环节完成：
 

@@ -2,11 +2,18 @@
 // 🔴 解决什么：升级/审核类工作流过去只活在技能文档里，弱模型做没做全凭自觉——
 //    现在每一步必须 pf workflow done 落一条标记、审查逐维落记录，
 //    status/check 随时回答"做到哪一步、哪些没做、哪些审查漏了"（硬性清单，不是文档）。
+//
+// 🔴 2026-10-18 第二课：状态字段是 AI 自己写的，只校验字段 = 让 AI 自证。
+//    实测：产物路径指向不存在的文件、证据全写"看过了/没问题"，check 照样 exit 0。
+//    现在校验对象一律是外部事实——产物文件存在性 + sha256 + 尺寸 + mtime、
+//    证据里的可复查锚点、时间先后。见 artifact.mjs。
+//
 // 存储：~/.promptfigure/projects/<docId>/workflow.json（单活跃工作流，历史走 events.jsonl）
 import fs from "node:fs";
 import path from "node:path";
 import { readWorkflow, writeWorkflow, projectByDocId } from "./store.mjs";
 import { appendEvent } from "./events.mjs";
+import { capture, verify, evidenceQuality, imageSize } from "./artifact.mjs";
 
 export const BANNED_ENHANCE = /超分|超分辨率|去噪|去模糊|清晰度提升|提升清晰度|修复|super.?resolution|denoise|restor|sharpen/i;
 
@@ -27,6 +34,7 @@ export function bannedEnhanceHits(text) {
 }
 
 // ---- 工作流模板（步骤清单 = 硬性清单的定义源；改流程先改这里再改技能文档）----
+// artifact: true = 这步必须交出磁盘上真实存在的产物文件（check 时复核哈希）
 export const TEMPLATES = {
   upgrade: {
     title: "图表升级（优化已有图 / 整文批量升级）",
@@ -37,7 +45,7 @@ export const TEMPLATES = {
       { id: "genre",     title: "体裁判定：comparison / pipeline / original 三选一 + 理由" },
       { id: "panels",    title: "panel 清单 + 布局声明（组合图必做；单图可 skip）", skippable: true },
       { id: "materials", title: "素材就位：原图/裁片/数据文件路径落定" },
-      { id: "produce",   title: "生成产物：产物文件路径写进 note" },
+      { id: "produce",   title: "生成产物：写产物文件路径（check 会验文件真实存在+哈希）", artifact: true },
       { id: "selfcheck", title: "亲眼核验：打开产物逐条看（尺寸/文字/对齐）", evidence: true },
       { id: "review",    title: "审查三维 F/G/H（由 pf workflow review 逐维自动完成）", auto: "review" },
       { id: "acceptance",title: "acceptance 四项留痕（由 pf workflow acceptance 自动完成）", auto: "acceptance" },
@@ -138,9 +146,9 @@ export function init(docId, { kind, goal = "", reset = false } = {}) {
     throw new Error(`已有未完结工作流（${cur.kind}，${doneN}/${cur.steps.length} 步）——pf workflow status 看进度；确要重开加 --reset`);
   }
   const wf = {
-    kind, goal, templateRev: 1,
+    kind, goal, templateRev: 2,
     createdAt: new Date().toISOString(),
-    steps: t.steps.map((s) => ({ id: s.id, status: "pending", note: "", evidence: "", at: null })),
+    steps: t.steps.map((s) => ({ id: s.id, status: "pending", note: "", evidence: "", at: null, artifact: null })),
     reviews: [], // {dim, verdict, evidence, at}
     acceptance: null, // {story, segmentation, alignment, enhancement, at}
     updatedAt: new Date().toISOString(),
@@ -163,6 +171,13 @@ function stepDef(t, id) {
   return t.steps.find((s) => s.id === id);
 }
 
+// 产物路径的解析基准：当前工作目录（宿主就在用户项目里跑）+ 项目目录
+function basesFor(docId) {
+  const out = [process.cwd()];
+  try { out.push(projectByDocId(docId)); } catch { /* 项目目录异常不影响 cwd 解析 */ }
+  return out;
+}
+
 export function done(docId, stepId, { note = "", evidence = "" } = {}) {
   const wf = readActive(docId) || throwNone();
   const t = templateOf(wf.kind);
@@ -174,16 +189,34 @@ export function done(docId, stepId, { note = "", evidence = "" } = {}) {
   if (def.evidence && !evidence.trim()) {
     throw new Error(`步骤 "${stepId}" 需要 --evidence（${def.title}——证据留痕，防止"读过/看过"是编的）`);
   }
+  if (def.evidence) {
+    const q = evidenceQuality(evidence, { label: "evidence" });
+    if (!q.ok) throw new Error(`步骤 "${stepId}" 的 evidence 不合格：${q.why}`);
+  }
   const st = wf.steps.find((s) => s.id === stepId);
   if (st.status === "done") throw new Error(`步骤 "${stepId}" 已标记完成（${st.at}）——重复标记无需操作`);
   const blocker = firstIncomplete(wf, t, stepId);
   if (blocker) {
     throw new Error(`顺序被拦："${blocker.id}" 还没完成（${blocker.title}）——先做它再回来。硬性清单不允许跳步`);
   }
+  // 🔴 产物步：note 里写的文件必须真的在磁盘上，当场取证（哈希+尺寸+mtime）
+  let art = null;
+  if (def.artifact) {
+    const cap = capture(note, basesFor(docId));
+    if (!cap.ok) throw new Error(`产物取证失败：${cap.reason}`);
+    art = cap.record;
+    const v = verify(art);
+    if (!v.ok) throw new Error(`产物不合格：${v.why}`);
+    const born = Date.parse(wf.createdAt || "");
+    if (born && v.mtimeMs && v.mtimeMs < born - 300 * 1000) {
+      throw new Error(`产物 ${path.basename(art.path)} 的修改时间（${art.mtime}）早于开工时间（${wf.createdAt}）——这是旧图，不能当本轮产物：重新生成，或检查是不是路径写错了`);
+    }
+  }
   st.status = "done"; st.note = note.trim(); st.evidence = evidence.trim(); st.at = new Date().toISOString();
+  if (art) st.artifact = art;
   wf.updatedAt = st.at;
   writeWorkflow(docId, wf);
-  appendEvent(docId, "workflow.done", { step: stepId });
+  appendEvent(docId, "workflow.done", { step: stepId, artifact: art ? art.sha256 : undefined });
   return wf;
 }
 
@@ -209,6 +242,24 @@ export function skip(docId, stepId, { reason = "" } = {}) {
   return wf;
 }
 
+// 补取证：旧状态文件或产物被手工补上时，把产物重新取证一次
+export function bindArtifact(docId, file) {
+  const wf = readActive(docId) || throwNone();
+  const t = templateOf(wf.kind);
+  const def = t.steps.find((s) => s.artifact);
+  if (!def) throw new Error(`工作流 ${wf.kind} 没有产物步，不需要取证`);
+  const cap = capture(file, basesFor(docId));
+  if (!cap.ok) throw new Error(`产物取证失败：${cap.reason}`);
+  const v = verify(cap.record);
+  if (!v.ok) throw new Error(`产物不合格：${v.why}`);
+  const st = wf.steps.find((s) => s.id === def.id);
+  st.artifact = cap.record;
+  wf.updatedAt = new Date().toISOString();
+  writeWorkflow(docId, wf);
+  appendEvent(docId, "workflow.bind", { step: def.id, sha256: cap.record.sha256 });
+  return wf;
+}
+
 export function review(docId, { dim, verdict, evidence = "" }) {
   const wf = readActive(docId) || throwNone();
   const t = templateOf(wf.kind);
@@ -218,9 +269,6 @@ export function review(docId, { dim, verdict, evidence = "" }) {
   }
   const V = String(verdict || "").toUpperCase();
   if (!["PASS", "FAIL"].includes(V)) throw new Error(`--verdict 只认 PASS / FAIL`);
-  if (!evidence.trim()) {
-    throw new Error(`--evidence 必填：你在图里看到的、支撑判定的具体证据（元素个数/位置/引用原文），"看起来没问题" = 无效审查`);
-  }
   // 🔴 2026-10-18 审计：旧实现 review 不看前置——context 都没做就能把 F/G/H 全判 PASS，
   //    审查沦为"随便点三下"，产线顺序锁形同虚设。审查必须在产物出来之后。
   const autoDef = t.steps.find((s) => s.auto === "review");
@@ -230,6 +278,11 @@ export function review(docId, { dim, verdict, evidence = "" }) {
       throw new Error(`审查被拦："${blocker.id}" 还没完成（${blocker.title}）——审查必须在产物出来之后做，不能空审。先 pf workflow done ${blocker.id} …`);
     }
   }
+  if (!String(evidence || "").trim()) {
+    throw new Error(`--evidence 必填：你在图里看到的、支撑判定的具体证据（元素个数/位置/原文引文），"看起来没问题" = 无效审查`);
+  }
+  const q = evidenceQuality(evidence, { label: "审查证据" });
+  if (!q.ok) throw new Error(`${q.why}（维度 ${D}·${DIM_NAMES[D]}）`);
   const rec = { dim: D, verdict: V, evidence: evidence.trim(), at: new Date().toISOString() };
   const prev = wf.reviews.findIndex((r) => r.dim === D);
   if (prev >= 0) wf.reviews[prev] = rec; // 重审覆盖：改判以最新为准，历史在事件流
@@ -249,6 +302,9 @@ export function review(docId, { dim, verdict, evidence = "" }) {
   return wf;
 }
 
+// 硬锚点：acceptance 的量化项（alignment/enhancement）里必须有数字/路径/英文，才证明真做过
+const HARD_ANCHOR = (s) => /\d/.test(s) || /[\\/]/.test(s) || /\.[a-z0-9]{2,5}\b/i.test(s) || /[A-Za-z]{3,}/.test(s);
+
 export function acceptance(docId, fields) {
   const wf = readActive(docId) || throwNone();
   const t = templateOf(wf.kind);
@@ -259,6 +315,19 @@ export function acceptance(docId, fields) {
   const hits = bannedEnhanceHits(fields.enhancement);
   if (hits.length) {
     throw new Error(`acceptance.enhancement 含白名单外动作（"${hits[0]}"——清晰度提升/内容重绘类措辞）——优化白名单只许显示性增强（对比度拉伸等，须声明参数）/结构编辑；没做就如实写"有意不做：…"`);
+  }
+  // 🔴 四项不许是空话：story/segmentation 要求具体；alignment/enhancement 天然量化，必须有数字/路径/英文
+  for (const k of ["story", "segmentation"]) {
+    const q = evidenceQuality(fields[k], { min: 8, label: `acceptance.${k}`, anchor: false });
+    if (!q.ok) throw new Error(`${q.why}——这一项要写清"原文论点是什么"/"按什么逻辑分段"，不是评价`);
+  }
+  for (const k of ["alignment", "enhancement"]) {
+    const v = String(fields[k]).trim();
+    const q = evidenceQuality(v, { min: 8, label: `acceptance.${k}` });
+    if (!q.ok) throw new Error(`${q.why}——这一项要写清"具体对到什么位置、用什么参数"`);
+    if (!HARD_ANCHOR(v)) {
+      throw new Error(`acceptance.${k} 没有量化内容（"${v.slice(0, 16)}"）——对齐要写 px/行/列/基线，增强要写参数（如对比度拉伸 1-99.5 百分位）；写不出具体数字 = 没真做`);
+    }
   }
   wf.acceptance = { story: fields.story.trim(), segmentation: fields.segmentation.trim(), alignment: fields.alignment.trim(), enhancement: fields.enhancement.trim(), at: new Date().toISOString() };
   wf.updatedAt = wf.acceptance.at;
@@ -307,6 +376,85 @@ export function isComplete(wf) {
   return !m.steps.length && !m.reviews.length && !m.failed.length && !m.acceptance;
 }
 
+// ---- 复核（check 的真身）：不看 AI 说了什么，看磁盘上有没有 / 是不是同一个 / 时间对不对 ----
+export function audit(wf) {
+  const issues = [];
+  const t = templateOf(wf.kind);
+  const m = missing(wf);
+
+  for (const s of m.steps) issues.push(`步骤 ${s.id} 未完成（${s.title}）`);
+  for (const d of m.reviews) issues.push(`审查 ${d}（${DIM_NAMES[d]}）未做`);
+  for (const d of m.failed) issues.push(`审查 ${d} 判 FAIL 还没修好重审`);
+  if (m.acceptance) issues.push("acceptance 四项未留痕");
+
+  // ① 产物：存在性 / 哈希 / 尺寸 / mtime
+  const pdef = t.steps.find((s) => s.artifact);
+  let prodAt = null;
+  if (pdef) {
+    const pst = wf.steps.find((s) => s.id === pdef.id);
+    if (pst && pst.status === "done") {
+      prodAt = pst.at;
+      if (!pst.artifact) {
+        issues.push(`产物未取证（${pdef.id} 是旧版/手工写入的记录）——补一次：pf workflow bind --file "<产物路径>"`);
+      } else {
+        const v = verify(pst.artifact);
+        if (!v.ok) issues.push(v.why);
+        else {
+          const art = pst.artifact;
+          if (art.kind === "image" && (!art.w || !art.h)) {
+            issues.push(`产物读不出尺寸（可能不是有效图片）：${art.path}`);
+          }
+          // ② 产物不能早于开工——防"拿旧图当新交付"（用磁盘当前 mtime，不用标记时的快照）
+          const born = Date.parse(wf.createdAt || "");
+          if (born && v.mtimeMs && v.mtimeMs < born - 300 * 1000) {
+            issues.push(`产物 ${path.basename(art.path)} 的最后修改时间（${new Date(v.mtimeMs).toISOString()}）早于开工时间（${wf.createdAt}）——这是旧图，不是本轮产物`);
+          }
+        }
+      }
+    }
+  }
+
+  // ③ 时间线：审查/acceptance 必须在产物之后
+  if (prodAt) {
+    for (const r of wf.reviews) {
+      if (r.at && Date.parse(r.at) < Date.parse(prodAt)) issues.push(`审查 ${r.dim} 的时间（${r.at}）早于产物时间（${prodAt}）——产物没出就审 = 假审`);
+    }
+    if (wf.acceptance && wf.acceptance.at && Date.parse(wf.acceptance.at) < Date.parse(prodAt)) {
+      issues.push(`acceptance 时间（${wf.acceptance.at}）早于产物时间（${prodAt}）`);
+    }
+  }
+
+  // ④ 证据质量：空话不算证据（字段非空 ≠ 有事实）
+  for (const def of t.steps.filter((s) => s.evidence)) {
+    const st = wf.steps.find((s) => s.id === def.id);
+    if (!st || st.status !== "done") continue;
+    const q = evidenceQuality(st.evidence, { label: `${def.id} 的证据` });
+    if (!q.ok) issues.push(`${def.id}：${q.why}`);
+  }
+  for (const r of wf.reviews) {
+    const q = evidenceQuality(r.evidence, { label: `审查 ${r.dim} 的证据` });
+    if (!q.ok) issues.push(`${q.why}`);
+  }
+
+  // ⑤ acceptance 空话
+  if (t.acceptance && wf.acceptance) {
+    for (const k of ["story", "segmentation"]) {
+      const q = evidenceQuality(wf.acceptance[k], { label: `acceptance.${k}`, anchor: false });
+      if (!q.ok) issues.push(q.why);
+    }
+    for (const k of ["alignment", "enhancement"]) {
+      const q = evidenceQuality(wf.acceptance[k], { label: `acceptance.${k}` });
+      if (!q.ok) issues.push(q.why);
+    }
+    for (const k of ["alignment", "enhancement"]) {
+      const v = String(wf.acceptance[k] || "");
+      if (v && !HARD_ANCHOR(v)) issues.push(`acceptance.${k} 没有量化内容（写不出 px/百分位/参数 = 没真做）`);
+    }
+  }
+
+  return { ok: issues.length === 0, issues };
+}
+
 // ---- 渲染 ----
 const ICON = { done: "✅", skipped: "⏭️ ", pending: "⬜" };
 
@@ -317,7 +465,8 @@ export function renderStatus(wf) {
   for (const def of t.steps) {
     const st = wf.steps.find((s) => s.id === def.id) || { status: "pending", note: "", evidence: "" };
     const head = `${ICON[st.status]} ${def.title}`;
-    const tail = st.status === "done" ? ` —— ${st.note}${st.evidence ? ` ｜ 证据：${trunc(st.evidence, 60)}` : ""}`
+    const art = st.artifact ? ` ｜ 产物 ${path.basename(st.artifact.path)} ${st.artifact.w ? `${st.artifact.w}×${st.artifact.h} ` : ""}${st.artifact.sha256.slice(0, 8)}` : "";
+    const tail = st.status === "done" ? ` —— ${st.note}${art}${st.evidence ? ` ｜ 证据：${trunc(st.evidence, 60)}` : ""}`
       : st.status === "skipped" ? ` —— 跳过：${st.note}` : "";
     lines.push(`  ${head}${tail}`);
   }
@@ -331,7 +480,7 @@ export function renderStatus(wf) {
   }
   const m = missing(wf);
   if (isComplete(wf)) {
-    lines.push(`\n🎉 全部完成——pf workflow check 复核后交付。`);
+    lines.push(`\n🎉 步骤齐全——还要 pf workflow check 复核产物与证据，check 才是交付门。`);
   } else {
     const next = m.steps[0];
     lines.push(`\n→ 下一步（唯一）：`);
@@ -348,15 +497,34 @@ export function renderStatus(wf) {
 }
 
 export function renderCheck(wf) {
-  const m = missing(wf);
   const t = templateOf(wf.kind);
-  if (isComplete(wf)) return { ok: true, text: `✅ 工作流 ${wf.kind} 全部完成——步骤 ${wf.steps.length}/${wf.steps.length}、审查 ${t.reviews.join("/")} 全 PASS、acceptance ${t.acceptance ? "已留痕" : "不适用"}。可以交付。` };
-  const lines = [`❌ 工作流未完成，缺 ${m.steps.length} 步 / ${m.reviews.length + m.failed.length} 项审查${m.acceptance ? " / acceptance 未留痕" : ""}：`];
-  for (const s of m.steps) lines.push(`  ⬜ 步骤 ${s.id}：${s.title}`);
-  for (const d of m.reviews) lines.push(`  ⬜ 审查 ${d}（${DIM_NAMES[d]}）：pf workflow review --dim ${d} --verdict PASS|FAIL --evidence "…"`);
-  for (const d of m.failed) lines.push(`  ❌ 审查 ${d} 判 FAIL——修缺陷后重审：pf workflow review --dim ${d} --verdict PASS --evidence "…"`);
-  if (m.acceptance) lines.push(`  ⬜ acceptance 四项：pf workflow acceptance --story "…" --segmentation "…" --alignment "…" --enhancement "…"`);
+  const r = audit(wf);
+  if (r.ok) {
+    const pdef = t.steps.find((s) => s.artifact);
+    const art = pdef ? wf.steps.find((s) => s.id === pdef.id)?.artifact : null;
+    const artLine = art ? `产物 ${path.basename(art.path)}（${art.w ? `${art.w}×${art.h}，` : ""}sha256 ${art.sha256.slice(0, 8)}）已复核` : "无产物步";
+    return { ok: true, text: `✅ 工作流 ${wf.kind} 通过复核——步骤 ${wf.steps.length}/${wf.steps.length}、审查 ${t.reviews.join("/")} 全 PASS、证据均有可复查锚点、${artLine}、acceptance ${t.acceptance ? "四项合格" : "不适用"}。可以交付。` };
+  }
+  const lines = [`❌ 复核没过（${r.issues.length} 项），不许交付：`];
+  r.issues.forEach((s, i) => lines.push(`  ${i + 1}. ${s}`));
+  lines.push(`\n逐条补齐后重跑：pf workflow check`);
   return { ok: false, text: lines.join("\n") };
+}
+
+// 交付凭据：一行可贴进汇报的摘要，用户一眼能看出"有没有走完、产物是不是这个"
+// 用法写在技能里：交付消息必须带这一行，没有 = 未交付（防宿主嘴上说做完）
+export function receipt(wf) {
+  const t = templateOf(wf.kind);
+  const a = audit(wf);
+  const pdef = t.steps.find((s) => s.artifact);
+  const art = pdef ? wf.steps.find((s) => s.id === pdef.id)?.artifact : null;
+  const artPart = art ? `产物 ${path.basename(art.path)} ${art.w || "?"}×${art.h || "?"} sha256:${art.sha256.slice(0, 12)}` : "无产物";
+  const doneN = wf.steps.filter((s) => s.status === "done" || s.status === "skipped").length;
+  const rev = t.reviews.map((d) => {
+    const r = wf.reviews.find((x) => x.dim === d);
+    return `${d}:${r ? r.verdict : "未审"}`;
+  }).join(" ");
+  return `[pf-workflow] ${wf.kind} ${doneN}/${wf.steps.length} ｜ ${rev} ｜ ${artPart} ｜ check ${a.ok ? "通过" : `未过(${a.issues.length}项)`} ｜ ${new Date().toISOString()}`;
 }
 
 function trunc(s, n) { s = String(s); return s.length > n ? s.slice(0, n) + "…" : s; }

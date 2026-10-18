@@ -128,6 +128,9 @@ promptFigure 本地插件 v${VERSION} —— 在你的 AI 宿主里为论文配�
   pf workflow acceptance --story "…" --segmentation "…" --alignment "…" --enhancement "…"
                                       四项留痕（enhancement 白名单外措辞会被拒）
   pf workflow check                   🔴 交付硬门：缺步骤/缺审查/有 FAIL/缺 acceptance → exit 1，不许交付
+                                      还要复核产物：文件存在 + sha256 一致 + 尺寸够 + mtime 不早于开工
+  pf workflow bind --file <产物路径>  产物补取证（旧状态文件 / 产物手工补上时用一次）
+  pf workflow receipt                交付凭据（一行：步骤进度/审查/产物哈希/check 结论）——汇报时必须原样带上
 
 服务：
   pf serve                   前台启动本地服务（一般不用，pf open 会自动拉起）
@@ -2866,6 +2869,22 @@ async function main() {
         console.log(hadAcc
           ? "✅ acceptance 已重新留痕（覆盖前一次，历次内容在 events.jsonl 可查）"
           : "✅ acceptance 四项已留痕（enhancement 白名单外措辞会被拒绝，没做就如实写「有意不做」）");
+        return;
+      }
+      if (sub === "bind") {
+        // 产物补取证：旧状态文件（模板 v1）或产物被换过之后，重新钉一次哈希
+        const file = arg("--file") || wfArgs[1];
+        if (!file) wfFail("用法：pf workflow bind --file \"<产物路径>\"", "产物路径就是生成出来的那个文件，如 figures/fig3.png");
+        const wf = W.bindArtifact(docIdW, file);
+        const st = wf.steps.find((s) => s.artifact);
+        console.log(`✅ 产物已取证：${st.artifact.path}（${st.artifact.w}×${st.artifact.h}，${(st.artifact.bytes / 1024).toFixed(0)}KB，sha256 ${st.artifact.sha256.slice(0, 12)}）`);
+        return;
+      }
+      if (sub === "receipt") {
+        // 交付凭据：一行摘要，交付消息必须带（用户一眼看出有没有走完、产物是不是这个）
+        const wf = W.readActive(docIdW);
+        if (!wf) wfFail("没有活跃工作流——pf workflow init --kind upgrade|review");
+        console.log(W.receipt(wf));
         return;
       }
       if (sub === "check") {
