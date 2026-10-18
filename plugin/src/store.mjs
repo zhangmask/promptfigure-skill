@@ -83,29 +83,69 @@ function writeJson(file, data) {
 // 机制：项目目录内独占锁文件（wx 创建）+ 锁内重读合并；写锁只包住
 // 磁盘写本身，不嵌套持有（所有调用方都是 写完即放，无重入）。
 const LOCK_NAME = ".pf-write.lock";
+// 🔴 2026-10-18 审计修复（宿主 AI 失误路径实测）：
+// 旧实现的三个坑，任何一个都让整条链路 30 秒内全部写不进去，而报错只说"等待超时"：
+//  ① 超时 throw 在 for 循环里，finally 在循环外 → 锁清理被跳过，锁残留；
+//     残留锁 30s 内每个后续命令都连带失败（实测 pid=56616 持锁 31s，期间审计全挂）；
+//  ② `catch { continue }` 包住 unlink 失败（Windows 杀软/索引占用）→ 不检查超时 → 死循环；
+//  ③ 只看 mtime 判断"持有者死了"，进程早退但锁刚写 <30s 时一律等满 → 其实是可立即破的空锁。
+// 现在：空锁 / 持有 PID 已不存在 / 超龄 三种都立即破；所有退出路径都清锁；超时报错自带下一步。
+function lockOwnerAlive(pid) {
+  if (!pid) return false; // 空锁 = 创建后没写进去（进程在 open 与 write 之间被杀）→ 无主
+  try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; } // EPERM = 进程在，只是没权限发信号
+}
 function withLock(dir, fn, { timeoutMs = 10000, staleMs = 30000 } = {}) {
   const lockPath = path.join(dir, LOCK_NAME);
   const t0 = Date.now();
   const nap = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-  for (;;) {
-    try {
-      const fd = fs.openSync(lockPath, "wx"); // 独占创建 = 拿到锁
-      fs.writeSync(fd, `${process.pid} ${new Date().toISOString()}`);
-      fs.closeSync(fd);
-      break;
-    } catch (e) {
-      if (e.code !== "EEXIST") throw e;
+  let locked = false; // 只有自己拿到锁才在退出时删——绝不删别人的锁
+  try {
+    for (;;) {
       try {
-        // 持锁进程崩了 → 锁文件超龄 → 破锁（防死等）
-        if (Date.now() - fs.statSync(lockPath).mtimeMs > staleMs) { fs.unlinkSync(lockPath); continue; }
-      } catch { continue; } // 锁刚好被释放：立刻重试
+        const fd = fs.openSync(lockPath, "wx"); // 独占创建 = 拿到锁
+        try { fs.writeSync(fd, `${process.pid} ${new Date().toISOString()}`); } finally { fs.closeSync(fd); }
+        locked = true;
+        break;
+      } catch (e) {
+        if (e.code !== "EEXIST") throw e;
+      }
+      // 判这把锁能不能破：空锁 / 持有者已死 / 超龄
+      let breakable = false;
+      let why = "";
+      try {
+        const raw = fs.readFileSync(lockPath, "utf8");
+        const pid = Number(String(raw).trim().split(/\s+/)[0]) || 0;
+        const age = Date.now() - fs.statSync(lockPath).mtimeMs;
+        if (!pid) { breakable = true; why = "锁内容为空（持有者未写入即退出）"; }
+        else if (!lockOwnerAlive(pid)) { breakable = true; why = `持有进程 ${pid} 已不存在`; }
+        else if (age > staleMs) { breakable = true; why = `已持锁 ${Math.round(age / 1000)}s（超龄）`; }
+      } catch (e) {
+        if (e.code === "ENOENT") continue; // 刚好被释放：立刻重试，别算超时
+        breakable = true; why = `锁文件不可读（${e.code || e.message}）`;
+      }
+      // 🔴 破锁失败绝不能再 continue——旧实现在这里死循环到天荒地老
+      if (breakable) {
+        try { fs.unlinkSync(lockPath); } catch { /* 被别的进程抢先破了：下一轮重试即可 */ }
+        if (Date.now() - t0 > timeoutMs) {
+          throw new Error(`项目写锁${
+            why ? `（${why}）` : ""
+          }——破锁多次失败，锁文件：${lockPath}。没有进程该持有它时可手动删除后重试`);
+        }
+        nap(10);
+        continue;
+      }
       if (Date.now() - t0 > timeoutMs) {
-        throw new Error(`项目写锁等待超时（另一进程卡在 ${lockPath}；确认无进程占用后可手动删除该锁文件）`);
+        throw new Error(`项目写锁被占用超时（${
+          why || "另一进程正在写"
+        }）——锁文件：${lockPath}。稍等 1 秒重试同一命令即可（持有者退出后锁会自动失效）；反复出现就在项目目录删掉该 .pf-write.lock`);
       }
       nap(20 + Math.random() * 40);
     }
+    return fn();
+  } finally {
+    // 覆盖 fn 抛错 / 破锁路径 / 正常返回——旧实现漏了前两种，锁残留正是这么来的
+    if (locked) { try { fs.unlinkSync(lockPath); } catch { /* 已被破锁删掉：无感 */ } }
   }
-  try { return fn(); } finally { try { fs.unlinkSync(lockPath); } catch { /* 已被破锁删掉：无感 */ } }
 }
 
 // 合并语义：并发写入按「键」保留双方成果，而不是整文件 Last-Writer-Wins

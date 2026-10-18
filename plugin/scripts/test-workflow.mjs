@@ -138,7 +138,7 @@ for (const d of ["A", "B", "C", "D", "E"]) {
   if (r.code !== 0) break;
 }
 r = pf([...W, "status"]);
-assert("A-E 全审后 dims 步自动 done", /✅\s*逐维审查.*三维全 PASS/.test(r.out), r.out.slice(0, 400));
+assert("A-E 全审后 dims 步自动 done", /✅\s*逐维审查.*全 PASS/.test(r.out), r.out.slice(0, 400));
 r = pf([...W, "review", "--dim", "F", "--verdict", "PASS", "--evidence", "x"]);
 assert("review 模板不接受 F 维", r.code === 1 && /不属于本工作流/.test(r.out), r.out.slice(0, 150));
 r = pf([...W, "done", "report", "--note", "审核卡已出、qa 已写回"]);
@@ -147,6 +147,63 @@ assert("review 模板全绿 exit 0", r.code === 0, r.out.slice(0, 300));
 
 r = pf([...W, "init", "--kind", "upgrade", "--goal", "重开第二轮", ]);
 assert("完结后可再 init（新工作流）", r.code === 0 && /工作流已建立/.test(r.out), r.out.slice(0, 150));
+
+console.log("── 错误路径（宿主失误 / 坏档 / 锁残留）──");
+const wfFile = path.join(projDir, "workflow.json");
+const lockPath = path.join(projDir, ".pf-write.lock");
+
+// 坏档：不能伪装成"没有工作流"，更不能被 init 静默覆盖（2026-10-18 审计）
+pf([...W, "init", "--kind", "upgrade"]);
+fs.writeFileSync(wfFile, '{"kind":"upgrade","steps":[{"id":"context","sta');
+r = pf([...W, "status"]);
+assert("坏档 status 报损坏+备份，不冒充'没有工作流'", r.code === 1 && /损坏/.test(r.out) && !/没有活跃工作流/.test(r.out), r.out.slice(0, 200));
+const backups = fs.readdirSync(projDir).filter((f) => f.startsWith("workflow.json.bak-"));
+assert("坏档已自动备份", backups.length >= 1, String(backups));
+r = pf([...W, "init", "--kind", "upgrade"]);
+assert("坏档 init 拒绝静默覆盖并指路 --reset", r.code === 1 && /--reset/.test(r.out), r.out.slice(0, 220));
+assert("坏档 init 被拒后文件仍在（没被清空）", fs.existsSync(wfFile));
+r = pf([...W, "check"]);
+assert("坏档 check 不静默放行", r.code === 1 && /损坏/.test(r.out), r.out.slice(0, 150));
+
+// 旧模板：不崩栈，报"与当前模板不匹配"
+fs.writeFileSync(wfFile, JSON.stringify({ kind: "upgrade", reviews: [], acceptance: null }));
+r = pf([...W, "status"]);
+assert("旧模板 status 报不匹配且无 TypeError", r.code === 1 && /模板不匹配/.test(r.out) && !/Cannot read propert/.test(r.out), r.out.slice(0, 250));
+r = pf([...W, "status"]); // 二次调用：确认旧的坏档已被处理，不会连环崩
+assert("旧模板二次调用仍给同一人话报错", r.code === 1 && /模板不匹配/.test(r.out), r.out.slice(0, 150));
+r = pf([...W, "init", "--kind", "upgrade", "--reset"]);
+assert("旧模板 --reset 可重建且 exit 0", r.code === 0 && /已重置/.test(r.out), r.out.slice(0, 200));
+
+// init --reset 在正常活跃工作流上必须 exit 0（旧版重置成功却报失败）
+pf([...W, "done", "context", "--note", "旧论点", "--evidence", "a|b"]);
+r = pf([...W, "init", "--kind", "upgrade", "--reset"]);
+assert("活跃工作流 --reset 成功且 exit 0（不再双 init）", r.code === 0 && !/未完结/.test(r.out), r.out.slice(0, 200));
+r = pf([...W, "status"]);
+assert("--reset 后步骤归零", /⬜\s*原文定位/.test(r.out), r.out.slice(0, 200));
+
+// skip 不许覆盖已完成记录（旧版静默把 done 改成 skipped）
+pf([...W, "done", "context", "--note", "论点", "--evidence", "首句x|尾句y"]);
+pf([...W, "done", "genre", "--note", "comparison"]);
+pf([...W, "done", "panels", "--note", "2x2 布局"]);
+r = pf([...W, "skip", "panels", "--reason", "单图"]);
+assert("skip 拒绝覆盖已 done 步骤", r.code === 1 && /已完成/.test(r.out), r.out.slice(0, 200));
+r = pf([...W, "status"]);
+assert("被拒后 panels 仍是 done", /✅\s*panel 清单/.test(r.out), r.out.slice(0, 300));
+
+// 审查不许空审（产物出来之前）
+r = pf([...W, "review", "--dim", "F", "--verdict", "PASS", "--evidence", "看起来对齐"]);
+assert("产物前的审查被拦", r.code === 1 && /审查被拦/.test(r.out), r.out.slice(0, 220));
+
+// 锁残留：空锁 / 死 PID 锁都必须自动破，不能让宿主干等 10s 后失败（2026-10-18 实测 pid 持锁 31s 连带全挂）
+fs.writeFileSync(lockPath, "");
+let t0 = Date.now();
+r = pf([...W, "done", "materials", "--note", "素材就位"]);
+assert("空锁自动破、写入成功", r.code === 0 && Date.now() - t0 < 8000, `${Date.now() - t0}ms ${r.out.slice(0, 120)}`);
+fs.writeFileSync(lockPath, `999999 ${new Date().toISOString()}`);
+t0 = Date.now();
+r = pf([...W, "done", "produce", "--note", "产物 figures/x.png"]);
+assert("死 PID 锁自动破、写入成功", r.code === 0 && Date.now() - t0 < 8000, `${Date.now() - t0}ms ${r.out.slice(0, 120)}`);
+assert("写入后锁文件已清", !fs.existsSync(lockPath));
 
 console.log(`\n结果：${pass} pass / ${fail} fail`);
 process.exit(fail ? 1 : 0);

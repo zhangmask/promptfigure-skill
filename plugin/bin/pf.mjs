@@ -2808,14 +2808,23 @@ async function main() {
       const docIdW = path.basename(resolveDoc(arg("--doc")));
       const wfFail = (msg, hint) => die(msg, hint);
       if (sub === "init") {
-        let kind = arg("--kind");
-        if (has("--reset")) { W.reset(docIdW, { kind: kind || (W.readActive(docIdW) || {}).kind || "upgrade", goal: arg("--goal") || "" }); console.log("♻️ 旧工作流已重置"); }
-        if (!kind) {
-          const cur = W.readActive(docIdW);
-          kind = cur?.kind;
-          if (!kind) wfFail("缺 --kind：pf workflow init --kind upgrade|review（upgrade=优化已有图/整文升级；review=阶段4成图审核）", "pf workflow init --kind upgrade --goal \"<目标一句话>\"");
+        const kind = arg("--kind");
+        const goal = arg("--goal") || "";
+        if (has("--reset")) {
+          // 🔴 2026-10-18 审计：旧实现在这里调 W.reset 后**继续往下走**去 W.init，
+          //    第二次 init 撞上"已有未完结工作流" → 明明重置成功却 exit 1，
+          //    宿主 AI 以为失败又重试，反复 reset。现在 reset 完直接返回。
+          let prevKind = null;
+          try { prevKind = (W.readActive(docIdW) || {}).kind; } catch { prevKind = null; } // 旧档损坏时也要能重建
+          const wf = W.reset(docIdW, { kind: kind || prevKind || "upgrade", goal });
+          console.log(`♻️ 旧工作流已重置（旧档已备份为 workflow.json.bak-*）\n`);
+          console.log(W.renderStatus(wf));
+          return;
         }
-        const wf = W.init(docIdW, { kind, goal: arg("--goal") || "" });
+        if (!kind) {
+          wfFail("缺 --kind：pf workflow init --kind upgrade|review（upgrade=优化已有图/整文升级；review=阶段4成图审核）", "pf workflow init --kind upgrade --goal \"<目标一句话>\"");
+        }
+        const wf = W.init(docIdW, { kind, goal });
         console.log(`✅ 工作流已建立（${wf.kind}）——每做完一步就标记，步骤清单如下：\n`);
         console.log(W.renderStatus(wf));
         return;
@@ -2842,16 +2851,21 @@ async function main() {
       if (sub === "review") {
         const wf = W.review(docIdW, { dim: arg("--dim"), verdict: arg("--verdict"), evidence: arg("--evidence") || "" });
         const r = wf.reviews.find((x) => x.dim === String(arg("--dim")).toUpperCase());
+        if (!r) wfFail("审查没有落库（找不到刚写入的维度记录）——pf workflow status 复核，别当成已完成", "pf workflow status");
         console.log(`${r.verdict === "PASS" ? "✅" : "❌"} 审查 ${r.dim} → ${r.verdict}（证据已留痕）\n`);
         console.log(W.renderStatus(wf));
         return;
       }
       if (sub === "acceptance") {
+        const before = W.readActive(docIdW);
+        const hadAcc = !!(before && before.acceptance);
         W.acceptance(docIdW, {
           story: arg("--story"), segmentation: arg("--segmentation"),
           alignment: arg("--alignment"), enhancement: arg("--enhancement"),
         });
-        console.log("✅ acceptance 四项已留痕（enhancement 白名单外措辞会被拒绝，没做就如实写「有意不做」）");
+        console.log(hadAcc
+          ? "✅ acceptance 已重新留痕（覆盖前一次，历次内容在 events.jsonl 可查）"
+          : "✅ acceptance 四项已留痕（enhancement 白名单外措辞会被拒绝，没做就如实写「有意不做」）");
         return;
       }
       if (sub === "check") {

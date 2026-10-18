@@ -3,7 +3,9 @@
 //    现在每一步必须 pf workflow done 落一条标记、审查逐维落记录，
 //    status/check 随时回答"做到哪一步、哪些没做、哪些审查漏了"（硬性清单，不是文档）。
 // 存储：~/.promptfigure/projects/<docId>/workflow.json（单活跃工作流，历史走 events.jsonl）
-import { readWorkflow, writeWorkflow } from "./store.mjs";
+import fs from "node:fs";
+import path from "node:path";
+import { readWorkflow, writeWorkflow, projectByDocId } from "./store.mjs";
 import { appendEvent } from "./events.mjs";
 
 export const BANNED_ENHANCE = /超分|超分辨率|去噪|去模糊|清晰度提升|提升清晰度|修复|super.?resolution|denoise|restor|sharpen/i;
@@ -67,13 +69,70 @@ export function templateOf(kind) {
   return t;
 }
 
-export function readActive(docId) {
-  return readWorkflow(docId); // null = 没有活跃工作流
+// ---- 读取 + 校验（2026-10-18 审计补）----
+// 🔴 旧实现用 readJson(..., null)：workflow.json 被写坏/半截/手工改过时静默返回 null，
+//    status 报「没有活跃工作流」、init 直接覆盖重建——用户的历史留痕一声不响全没了。
+//    现在把"没有" / "损坏" / "旧模板" 分三态，各有各的下一步；损坏档一律先备份再报。
+const WF_FILE = (docId) => path.join(projectByDocId(docId), "workflow.json");
+
+function backupWorkflowFile(docId) {
+  const file = WF_FILE(docId);
+  const backup = `${file}.bak-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+  try { fs.copyFileSync(file, backup); return backup; } catch { return null; }
 }
 
-export function init(docId, { kind, goal = "" }) {
+export function loadState(docId) {
+  const file = WF_FILE(docId);
+  let raw;
+  try { raw = fs.readFileSync(file, "utf8"); } catch (e) {
+    if (e.code === "ENOENT") return { state: "none" };
+    throw new Error(`读不到工作流状态文件（${e.code}）：${file}——先 pf status 确认项目目录，或 pf workflow init --kind upgrade 重建`);
+  }
+  let wf;
+  try { wf = JSON.parse(raw); } catch (e) {
+    const backup = backupWorkflowFile(docId);
+    return { state: "corrupt", size: raw.length, detail: e.message, backup };
+  }
+  const t = wf && TEMPLATES[wf.kind];
+  if (!t) return { state: "foreign", kind: wf && wf.kind };
+  const have = Array.isArray(wf.steps) ? wf.steps : [];
+  const miss = t.steps.map((s) => s.id).filter((id) => !have.some((s) => s && s.id === id));
+  if (!Array.isArray(wf.steps) || miss.length) return { state: "stale", kind: wf.kind, miss: miss.length ? miss : ["steps 数组"] };
+  const bad = have.filter((s) => !s || !["pending", "done", "skipped"].includes(s.status));
+  if (bad.length) return { state: "stale", kind: wf.kind, miss: bad.map((s) => (s && s.id) || "（无名步骤）") };
+  return { state: "ok", wf };
+}
+
+// 状态不可用时给宿主 AI 的报错：说清坏在哪 + 已备份到哪 + 下一步敲什么
+export function stateError(st) {
+  if (st.state === "corrupt") {
+    return `工作流状态文件损坏（${st.size} 字节，JSON 解析失败：${st.detail}）——原文件已备份为 ${path.basename(st.backup || "（备份失败）")}。重建：pf workflow init --kind upgrade --reset（清单从空重来，旧档留在备份里可查）`;
+  }
+  if (st.state === "stale") {
+    return `工作流状态文件与当前模板不匹配（缺/异常：${st.miss.join(", ")}）——多半是旧版插件留下或模板升级过。重建：pf workflow init --kind ${st.kind} --reset（旧档会先备份）`;
+  }
+  if (st.state === "foreign") {
+    return `工作流状态文件里的类型 "${st.kind}" 已不存在（当前支持：${Object.keys(TEMPLATES).join(" / ")}）——重建：pf workflow init --kind upgrade --reset`;
+  }
+  return "工作流状态异常";
+}
+
+export function readActive(docId) {
+  const st = loadState(docId);
+  if (st.state === "none") return null;
+  if (st.state !== "ok") throw new Error(stateError(st));
+  return st.wf;
+}
+
+export function init(docId, { kind, goal = "", reset = false } = {}) {
   const t = templateOf(kind);
-  const cur = readWorkflow(docId);
+  const st = loadState(docId);
+  // 🔴 损坏/旧模板不许被 init 静默覆盖——重建必须显式 --reset，且旧档留备份
+  if (st.state !== "none" && st.state !== "ok") {
+    if (!reset) throw new Error(`${stateError(st)}\n（这次 init 没有覆盖旧档。确认重建请加 --reset）`);
+    if (st.state !== "corrupt") backupWorkflowFile(docId); // corrupt 在 loadState 里已备份
+  }
+  const cur = st.state === "ok" ? st.wf : null;
   if (cur && !isComplete(cur)) {
     const doneN = cur.steps.filter((s) => s.status === "done" || s.status === "skipped").length;
     throw new Error(`已有未完结工作流（${cur.kind}，${doneN}/${cur.steps.length} 步）——pf workflow status 看进度；确要重开加 --reset`);
@@ -92,11 +151,12 @@ export function init(docId, { kind, goal = "" }) {
 }
 
 export function reset(docId, opts) {
-  const cur = readWorkflow(docId);
-  if (cur) appendEvent(docId, "workflow.reset", { kind: cur.kind });
+  const st = loadState(docId);
+  if (st.state === "ok") appendEvent(docId, "workflow.reset", { kind: st.wf.kind });
+  if (st.state === "stale" || st.state === "foreign") backupWorkflowFile(docId);
   // init 的"已有活跃"检查基于文件，先删再建
   writeWorkflow(docId, null);
-  return init(docId, opts);
+  return init(docId, { ...opts, reset: true });
 }
 
 function stepDef(t, id) {
@@ -134,6 +194,14 @@ export function skip(docId, stepId, { reason = "" } = {}) {
   if (!def.skippable) throw new Error(`步骤 "${stepId}" 不允许跳过（${def.title}）`);
   if (!reason.trim()) throw new Error(`--reason 必填：为什么这步不适用。无理由跳过 = 放水`);
   const st = wf.steps.find((s) => s.id === stepId);
+  // 🔴 2026-10-18 审计：旧实现无条件覆盖——宿主把 `skip panels` 敲重复一次，
+  //    已 done 的记录就被改写成 skipped、note 被理由顶掉，exit 0 一声不响。
+  if (st.status === "done") {
+    throw new Error(`步骤 "${stepId}" 已完成（${st.at}：${st.note}）——skip 不能覆盖已完成记录；要改结论只能 pf workflow init --reset 重开`);
+  }
+  if (st.status === "skipped") {
+    throw new Error(`步骤 "${stepId}" 已是跳过状态（${st.note}）——无需重复 skip`);
+  }
   st.status = "skipped"; st.note = reason.trim(); st.at = new Date().toISOString();
   wf.updatedAt = st.at;
   writeWorkflow(docId, wf);
@@ -153,17 +221,27 @@ export function review(docId, { dim, verdict, evidence = "" }) {
   if (!evidence.trim()) {
     throw new Error(`--evidence 必填：你在图里看到的、支撑判定的具体证据（元素个数/位置/引用原文），"看起来没问题" = 无效审查`);
   }
+  // 🔴 2026-10-18 审计：旧实现 review 不看前置——context 都没做就能把 F/G/H 全判 PASS，
+  //    审查沦为"随便点三下"，产线顺序锁形同虚设。审查必须在产物出来之后。
+  const autoDef = t.steps.find((s) => s.auto === "review");
+  if (autoDef) {
+    const blocker = firstIncomplete(wf, t, autoDef.id);
+    if (blocker) {
+      throw new Error(`审查被拦："${blocker.id}" 还没完成（${blocker.title}）——审查必须在产物出来之后做，不能空审。先 pf workflow done ${blocker.id} …`);
+    }
+  }
   const rec = { dim: D, verdict: V, evidence: evidence.trim(), at: new Date().toISOString() };
   const prev = wf.reviews.findIndex((r) => r.dim === D);
   if (prev >= 0) wf.reviews[prev] = rec; // 重审覆盖：改判以最新为准，历史在事件流
   else wf.reviews.push(rec);
   wf.updatedAt = rec.at;
   // auto 步骤联动：所有要求维度都有记录且无 FAIL → 对应 auto 步骤置 done
+  const dims = t.reviews.join("/");
   for (const def of t.steps.filter((s) => s.auto === "review")) {
     const st = wf.steps.find((s) => s.id === def.id);
     const all = t.reviews.every((d) => wf.reviews.some((r) => r.dim === d));
     const anyFail = wf.reviews.some((r) => t.reviews.includes(r.dim) && r.verdict === "FAIL");
-    if (all && !anyFail && st.status === "pending") { st.status = "done"; st.note = `F/G/H 三维全 PASS`; st.at = rec.at; }
+    if (all && !anyFail && st.status === "pending") { st.status = "done"; st.note = `${dims} 全 PASS`; st.at = rec.at; }
     if (anyFail && st.status === "done") { st.status = "pending"; st.note = ""; } // 新 FAIL 打回
   }
   writeWorkflow(docId, wf);
@@ -198,7 +276,7 @@ export function firstIncomplete(wf, t, beforeId = null) {
   const idx = beforeId ? t.steps.findIndex((s) => s.id === beforeId) : t.steps.length;
   for (let i = 0; i < idx; i++) {
     const st = wf.steps.find((s) => s.id === t.steps[i].id);
-    if (st.status === "pending") return { id: st.id, title: t.steps[i].title };
+    if (!st || st.status === "pending") return { id: t.steps[i].id, title: t.steps[i].title };
   }
   return null;
 }
@@ -216,7 +294,7 @@ export function missing(wf) {
   const out = { steps: [], reviews: [], failed: [], acceptance: false };
   for (const def of t.steps) {
     const st = wf.steps.find((s) => s.id === def.id);
-    if (st.status === "pending") out.steps.push({ id: def.id, title: def.title, auto: def.auto || null });
+    if (!st || st.status === "pending") out.steps.push({ id: def.id, title: def.title, auto: def.auto || null });
   }
   out.reviews = pendingReviews(wf, t);
   out.failed = failedReviews(wf, t).map((r) => r.dim);
@@ -237,7 +315,7 @@ export function renderStatus(wf) {
   const lines = [];
   lines.push(`════ 工作流 · ${wf.kind}（${t.title}）${wf.goal ? ` · 目标：${wf.goal}` : ""} ════`);
   for (const def of t.steps) {
-    const st = wf.steps.find((s) => s.id === def.id);
+    const st = wf.steps.find((s) => s.id === def.id) || { status: "pending", note: "", evidence: "" };
     const head = `${ICON[st.status]} ${def.title}`;
     const tail = st.status === "done" ? ` —— ${st.note}${st.evidence ? ` ｜ 证据：${trunc(st.evidence, 60)}` : ""}`
       : st.status === "skipped" ? ` —— 跳过：${st.note}` : "";
